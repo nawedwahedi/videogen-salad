@@ -15,7 +15,7 @@ from playwright.sync_api import sync_playwright
 SEGMENT_MIN_SEC = 28
 SEGMENT_MAX_SEC = 34
 FPS             = 12
-WIDTH, HEIGHT   = 1280, 720
+WIDTH, HEIGHT   = 854, 480
 
 OVERLAY_W_FRAC_BASE = 0.24
 OVERLAY_W_JITTER    = 0.05
