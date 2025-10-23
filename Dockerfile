@@ -1,9 +1,16 @@
+# Use pre-built ffmpeg with NVENC support
+FROM jrottenberg/ffmpeg:7.1-nvidia2204 AS ffmpeg
+
+# Now use CUDA base and copy ffmpeg from above
 FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 
-# Prevent interactive prompts during installation
+# Copy ffmpeg binaries from ffmpeg image
+COPY --from=ffmpeg /usr/local /usr/local
+
+# Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Python, pip, git, wget, and system dependencies
+# Install Python, git, and Playwright dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
@@ -34,8 +41,6 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     libdbus-1-3 \
     libglib2.0-0 \
-    # FFmpeg with NVENC support
-    ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 # Clone the repository
