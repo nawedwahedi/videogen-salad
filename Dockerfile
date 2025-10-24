@@ -22,7 +22,6 @@ RUN apt-get update && apt-get install -y \
     wget \
     git \
     curl \
-    # Playwright dependencies
     libnss3 \
     libnspr4 \
     libatk1.0-0 \
