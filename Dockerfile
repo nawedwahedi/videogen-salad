@@ -4,6 +4,10 @@ FROM jrottenberg/ffmpeg:7.1-nvidia2204 AS ffmpeg
 # Now use CUDA base and copy ffmpeg from above
 FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 
+# ✅ ENABLE NVENC - ADD THESE LINES
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
+ENV NVIDIA_VISIBLE_DEVICES=all
+
 # Copy ffmpeg binaries from ffmpeg image
 COPY --from=ffmpeg /usr/local /usr/local
 
