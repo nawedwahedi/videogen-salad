@@ -387,22 +387,22 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     except:
         use_nvenc = False
     
-    if use_nvenc:
-        vcodec = "h264_nvenc"
-        preset = ["-preset","p4"]
-    else:
-        vcodec = "libx264"
-        preset = ["-preset","fast"]
-    
-    comp.write_videofile(
-        str(temp),
-        fps=fps,
-        codec=vcodec,
-        audio_codec="aac",
-        ffmpeg_params=preset + ["-crf","23"],
-        logger=logger,
-        threads=4
-    )
+if use_nvenc:
+    vcodec = "h264_nvenc"
+    params = ["-preset","p4","-cq","23"]
+else:
+    vcodec = "libx264"
+    params = ["-preset","fast","-crf","23"]
+
+comp.write_videofile(
+    str(temp),
+    fps=fps,
+    codec=vcodec,
+    audio_codec="aac",
+    ffmpeg_params=params,
+    logger=logger,
+    threads=4
+)
     
     if temp.exists():
         if out_path.exists():
