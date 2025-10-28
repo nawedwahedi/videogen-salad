@@ -12,10 +12,10 @@ from proglog import ProgressBarLogger
 from playwright.sync_api import sync_playwright
 
 # ================== TUNING ==================
-SEGMENT_MIN_SEC = 28
-SEGMENT_MAX_SEC = 34
+SEGMENT_MIN_SEC = 2  # Shorter pause at top
+SEGMENT_MAX_SEC = 3
 FPS             = 12
-WIDTH, HEIGHT   = 854, 480
+WIDTH, HEIGHT   = 1280, 720  # ✅ UPGRADED TO 720p
 
 OVERLAY_W_FRAC_BASE = 0.24
 OVERLAY_W_JITTER    = 0.05
@@ -77,7 +77,6 @@ def download_overlays_from_r2(csv_path, r2_client, bucket):
     """Download all unique niche overlays from R2"""
     print(f"[INFO] Reading CSV to find required overlays: {csv_path}")
     
-    # Read CSV and find unique niches
     unique_niches = set()
     with open(csv_path, 'r', encoding='utf-8-sig') as f:
         reader = csv.DictReader(f)
@@ -120,15 +119,65 @@ def upload_to_r2(client, local_path, username):
         print(f"   -> R2 upload failed: {e}")
         return None
 
-def create_landing_page(client, username, video_url):
+def upload_thumbnail_to_r2(client, thumbnail_path, username):
+    """Upload thumbnail to R2"""
     if client is None:
         return None
+    try:
+        key = f"{username}/thumbnail.jpg"
+        client.upload_file(
+            str(thumbnail_path),
+            R2_BUCKET,
+            key,
+            ExtraArgs={'ContentType': 'image/jpeg'}
+        )
+        return f"{R2_PUBLIC_URL}/{username}/thumbnail.jpg"
+    except Exception as e:
+        print(f"   -> Thumbnail upload failed: {e}")
+        return None
+
+def extract_thumbnail(video_path, thumbnail_path):
+    """Extract thumbnail from video at 2 seconds"""
+    try:
+        cmd = [
+            "ffmpeg", "-y", "-i", str(video_path),
+            "-ss", "00:00:02",
+            "-vframes", "1",
+            "-q:v", "2",
+            str(thumbnail_path)
+        ]
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
+    except Exception as e:
+        print(f"   -> Thumbnail extraction failed: {e}")
+        return False
+
+def create_landing_page(client, username, video_url, thumbnail_url):
+    """Create landing page with Open Graph tags"""
+    if client is None:
+        return None
+    
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video for {username}</title>
+    
+    <!-- Open Graph tags for social media -->
+    <meta property="og:title" content="I recorded this video for you">
+    <meta property="og:description" content="Personalized video message for {username}">
+    <meta property="og:image" content="{thumbnail_url}">
+    <meta property="og:video" content="{video_url}">
+    <meta property="og:type" content="video.other">
+    <meta property="og:url" content="{R2_PUBLIC_URL}/{username}/index.html">
+    
+    <!-- Twitter Card tags -->
+    <meta name="twitter:card" content="player">
+    <meta name="twitter:title" content="I recorded this video for you">
+    <meta name="twitter:description" content="Personalized video message">
+    <meta name="twitter:image" content="{thumbnail_url}">
+    
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -212,7 +261,7 @@ def create_landing_page(client, username, video_url):
         <h1>Hi there</h1>
         <p class="subtitle">I recorded this video for you</p>
         <div class="video-wrapper">
-            <video controls>
+            <video controls poster="{thumbnail_url}">
                 <source src="{video_url}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
@@ -223,6 +272,7 @@ def create_landing_page(client, username, video_url):
     </div>
 </body>
 </html>"""
+    
     try:
         key = f"{username}/index.html"
         client.put_object(
@@ -309,10 +359,9 @@ def load_rows(csv_path):
     return rows
 
 def capture_fullpage_png(page, url, out_png, width, height):
+    """✅ FIXED: Simple, reliable screenshot function"""
     try:
-        page.goto(url, wait_until="networkidle", timeout=45000)
-        page.wait_for_timeout(5000)
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
         page.screenshot(path=str(out_png), full_page=True)
         return True
@@ -321,6 +370,7 @@ def capture_fullpage_png(page, url, out_png, width, height):
         return False
 
 def build_scrolling_clip(png_path, w, h, duration, fps, seg_sec):
+    """✅ UPDATED: Create 5-second scroll animation"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -377,6 +427,7 @@ def ensure_overlay_optimized(overlay_path, cache_dir):
         return overlay_path
 
 def write_video_atomic(comp, out_path, fps, audio_clip, logger):
+    """✅ FIXED: Includes pixel format and better quality"""
     temp = out_path.with_suffix(".tmp.mp4")
     
     try:
@@ -390,10 +441,10 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     
     if use_nvenc:
         vcodec = "h264_nvenc"
-        params = ["-preset","p4","-cq","23","-pix_fmt","yuv420p"]
+        params = ["-preset","p4","-cq","18","-pix_fmt","yuv420p"]  # ✅ Better quality
     else:
         vcodec = "libx264"
-        params = ["-preset","fast","-crf","23"]
+        params = ["-preset","fast","-crf","18"]
     
     comp.write_videofile(
         str(temp),
@@ -425,10 +476,8 @@ def unique_path(base_path):
 
 # ================== MAIN ==================
 def main():
-    # ✅ FIX: Detect if running in headless mode
     headless_mode = os.getenv("WORKER_ID") is not None
     
-    # Check if NVENC is available
     check_nvenc()
     
     if headless_mode:
@@ -438,13 +487,11 @@ def main():
         print(f"[HEADLESS MODE] Worker {WORKER_ID}/{TOTAL_WORKERS}")
         print(f"[INFO] Calendly URL: {CALENDLY_URL}")
         
-        # Setup R2
         r2_client = setup_r2_client()
         if not r2_client:
             print("[ERROR] R2 client not configured")
             return
         
-        # Download CSV from R2
         try:
             print(f"[INFO] Downloading {CSV_FILENAME} from R2...")
             r2_client.download_file(R2_BUCKET, CSV_FILENAME, str(csv_path))
@@ -453,7 +500,6 @@ def main():
             print(f"[ERROR] CSV download failed: {e}")
             return
         
-        # Download all required overlays
         overlays = download_overlays_from_r2(csv_path, r2_client, R2_BUCKET)
         
     else:
@@ -462,188 +508,4 @@ def main():
         if not csv_path:
             print("[ERROR] No CSV selected")
             return
-        print("👉 Select your overlay video (mp4)")
-        overlay_src = pick_file("Select overlay",[("MP4","*.mp4"),("All files","*.*")])
-        if not overlay_src:
-            print("[ERROR] No overlay selected")
-            return
-        print("👉 Pick output folder")
-        outdir = pick_dir("Select output folder")
-        if not outdir:
-            print("[ERROR] No output folder selected")
-            return
-        r2_client = setup_r2_client()
-        overlays = {"default": overlay_src}
-
-    rows = load_rows(csv_path)
-    if not rows:
-        print("[ERROR] No valid rows in CSV.")
-        return
-
-    if r2_client:
-        print("[INFO] R2 upload enabled")
-    else:
-        print("[INFO] R2 upload disabled")
-
-    print(f"[INFO] {len(rows)} rows | {WIDTH}x{HEIGHT}@{FPS}")
-    outdir.mkdir(parents=True,exist_ok=True)
-    silent = SilentLogger()
-    grand_start = time.time()
-    results = []
-
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True, args=["--disable-gpu","--no-sandbox"])
-        context = browser.new_context(
-            viewport={"width": WIDTH, "height": HEIGHT},
-            user_agent=USER_AGENT,
-            java_script_enabled=True,
-            ignore_https_errors=True,
-            device_scale_factor=1.0
-        )
-        page = context.new_page()
-
-        total = len(rows)
-        for i,r in enumerate(rows,1):
-            url = clean_url(r["url"])
-            username = (r.get("username") or "").strip() or domain_from_url(url)
-            niche = r.get("niche", "").strip()
-            slug = safe_slug(username)
-            shot = outdir/f"{slug}.png"
-            outvid = outdir/f"{slug}.mp4"
-
-            print(f"[{i}/{total}] {url} | {username} | niche: {niche}")
-
-            # Get overlay for this niche
-            if headless_mode:
-                overlay_path = overlays.get(niche)
-                if not overlay_path:
-                    print(f"   -> skipped (no overlay for niche: {niche})")
-                    results.append({
-                        "Website URL": url,
-                        "Instagram Username": username,
-                        "Niche": niche,
-                        "Video Link": "FAILED - Missing overlay"
-                    })
-                    continue
-            else:
-                overlay_path = overlays.get("default")
-
-            if not capture_fullpage_png(page,url,shot,WIDTH,HEIGHT):
-                print("   -> skipped (capture failed)")
-                continue
-
-            if i % 50 == 0:
-                context.close()
-                browser.close()
-                browser = pw.chromium.launch(headless=True, args=["--disable-gpu","--no-sandbox"])
-                context = browser.new_context(
-                    viewport={"width": WIDTH, "height": HEIGHT},
-                    user_agent=USER_AGENT,
-                    java_script_enabled=True,
-                    ignore_https_errors=True,
-                    device_scale_factor=1.0
-                )
-                page = context.new_page()
-
-            # Optimize overlay if needed
-            overlay_path_opt = ensure_overlay_optimized(Path(overlay_path), outdir/"_cache")
-            
-            seg_sec = random.uniform(SEGMENT_MIN_SEC, SEGMENT_MAX_SEC)
-            video_start = time.time()
-            scroll = None
-            face_layer = None
-            comp = None
-            face_full = None
-            
-            try:
-                face_full = VideoFileClip(str(overlay_path_opt))
-                overlay_duration = float(face_full.duration or SEGMENT_MIN_SEC)
-                
-                scroll = build_scrolling_clip(shot,WIDTH,HEIGHT,overlay_duration,FPS,seg_sec)
-                layers = [scroll]
-
-                if face_full is not None:
-                    width_frac = OVERLAY_W_FRAC_BASE * (1.0 + random.uniform(-OVERLAY_W_JITTER, OVERLAY_W_JITTER))
-                    face_w = max(120, int(WIDTH * width_frac))
-                    scaled_h = int(face_full.h * (face_w / face_full.w))
-                    dx = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
-                    dy = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
-                    x = max(SCROLL_MARGIN, min(WIDTH - face_w - SCROLL_MARGIN, WIDTH - face_w - SCROLL_MARGIN + dx))
-                    y = max(SCROLL_MARGIN, min(HEIGHT - scaled_h - SCROLL_MARGIN, HEIGHT - scaled_h - SCROLL_MARGIN + dy))
-                    face_layer = face_full.resize(width=face_w).set_position((x, y)).subclip(0, overlay_duration)
-                    layers.append(face_layer)
-
-                comp = CompositeVideoClip(layers, size=(WIDTH, HEIGHT)).set_duration(overlay_duration)
-                if face_full is not None and face_full.audio is not None:
-                    comp = comp.set_audio(face_full.audio.subclip(0, overlay_duration))
-
-                final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
-
-                video_url = None
-                landing_url = None
-                if r2_client:
-                    video_url = upload_to_r2(r2_client, final_path, username)
-                    if video_url:
-                        landing_url = create_landing_page(r2_client, username, video_url)
-                        if landing_url:
-                            print(f"   -> landing page: {landing_url}")
-
-            except Exception as e:
-                msg = str(e)
-                if "Permission denied" in msg or "permission denied" in msg:
-                    try:
-                        alt = unique_path(outvid)
-                        print(f"   -> target locked; writing to {alt.name} instead")
-                        final_path = write_video_atomic(comp, alt, FPS, (face_full.audio if face_full else None), silent)
-                    except Exception as e2:
-                        print(f"   -> render failed: {e2}")
-                        continue
-                else:
-                    print(f"   -> render failed: {e}")
-                    continue
-            finally:
-                try:
-                    if comp: comp.close()
-                except: pass
-                try:
-                    if face_layer: face_layer.close()
-                except: pass
-                try:
-                    if scroll: scroll.close()
-                except: pass
-                try:
-                    if face_full: face_full.close()
-                except: pass
-
-            per_video = time.time() - video_start
-            total_elapsed = time.time() - grand_start
-            print(f"   -> saved {Path(final_path).name} | {per_video:.1f}s | ⏱ {timedelta(seconds=int(total_elapsed))}")
-
-            result = {
-                "Website URL": url,
-                "Instagram Username": username,
-                "Niche": niche,
-                "Video Link": landing_url or Path(final_path).resolve().as_uri()
-            }
-            results.append(result)
-
-        context.close()
-        browser.close()
-
-    res_csv = outdir / f"RESULTS_worker{WORKER_ID}.csv"
-    try:
-        with open(res_csv, "w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["Website URL","Instagram Username","Niche","Video Link"])
-            w.writeheader()
-            w.writerows(results)
-    except Exception as e:
-        print(f"[WARN] Could not write results CSV: {e}")
-
-    print(f"\n✅ Done. {len(results)}/{len(rows)} videos. Results: {res_csv}")
-    print(f"⏱️ Total elapsed: {timedelta(seconds=int(time.time()-grand_start))}")
-
-if __name__=="__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n[ABORTED]")
+        print("�
