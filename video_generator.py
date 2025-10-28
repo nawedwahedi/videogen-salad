@@ -364,7 +364,6 @@ def ensure_overlay_optimized(overlay_path, cache_dir):
         "ffmpeg","-y","-i",str(overlay_path),
         "-vf",f"scale={OVERLAY_TARGET_W}:-2",
         "-c:v","libx264","-preset","fast","-crf","23",
-        "-b:v",f"{OVERLAY_V_KBPS}k",
         "-c:a","aac","-b:a",f"{OVERLAY_A_KBPS}k",
         "-movflags","+faststart",
         str(cached)
@@ -387,22 +386,22 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     except:
         use_nvenc = False
     
-if use_nvenc:
-    vcodec = "h264_nvenc"
-    params = ["-preset","p4","-cq","23"]
-else:
-    vcodec = "libx264"
-    params = ["-preset","fast","-crf","23"]
-
-comp.write_videofile(
-    str(temp),
-    fps=fps,
-    codec=vcodec,
-    audio_codec="aac",
-    ffmpeg_params=params,
-    logger=logger,
-    threads=4
-)
+    if use_nvenc:
+        vcodec = "h264_nvenc"
+        params = ["-preset","p4","-cq","23"]
+    else:
+        vcodec = "libx264"
+        params = ["-preset","fast","-crf","23"]
+    
+    comp.write_videofile(
+        str(temp),
+        fps=fps,
+        codec=vcodec,
+        audio_codec="aac",
+        ffmpeg_params=params,
+        logger=logger,
+        threads=4
+    )
     
     if temp.exists():
         if out_path.exists():
