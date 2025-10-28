@@ -218,7 +218,7 @@ def create_landing_page(client, username, video_url):
             </video>
         </div>
         <div class="cta-section">
-            <a href="{CALENDLY_URL}" class="cta-button">Book Your Strategy Session</a>
+            <a href="{CALENDLY_URL}" class="cta-button">Book a FREE 10 Minute Call</a>
         </div>
     </div>
 </body>
@@ -310,7 +310,9 @@ def load_rows(csv_path):
 
 def capture_fullpage_png(page, url, out_png, width, height):
     try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        page.goto(url, wait_until="networkidle", timeout=45000)
+        page.wait_for_timeout(5000)
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         page.wait_for_timeout(2000)
         page.screenshot(path=str(out_png), full_page=True)
         return True
@@ -388,7 +390,7 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     
     if use_nvenc:
         vcodec = "h264_nvenc"
-        params = ["-preset","p4","-cq","23"]
+        params = ["-preset","p4","-cq","23","-pix_fmt","yuv420p"]
     else:
         vcodec = "libx264"
         params = ["-preset","fast","-crf","23"]
