@@ -508,4 +508,216 @@ def main():
         if not csv_path:
             print("[ERROR] No CSV selected")
             return
-        print("�
+        print("👉 Select your overlay video (mp4)")
+        overlay_src = pick_file("Select overlay",[("MP4","*.mp4"),("All files","*.*")])
+        if not overlay_src:
+            print("[ERROR] No overlay selected")
+            return
+        print("👉 Pick output folder")
+        outdir = pick_dir("Select output folder")
+        if not outdir:
+            print("[ERROR] No output folder selected")
+            return
+        r2_client = setup_r2_client()
+        overlays = {"default": overlay_src}
+
+    rows = load_rows(csv_path)
+    if not rows:
+        print("[ERROR] No valid rows in CSV.")
+        return
+
+    if r2_client:
+        print("[INFO] R2 upload enabled")
+    else:
+        print("[INFO] R2 upload disabled")
+
+    print(f"[INFO] {len(rows)} rows | {WIDTH}x{HEIGHT}@{FPS}")
+    outdir.mkdir(parents=True,exist_ok=True)
+    silent = SilentLogger()
+    grand_start = time.time()
+    results = []
+
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=True, args=["--disable-gpu","--no-sandbox"])
+        context = browser.new_context(
+            viewport={"width": WIDTH, "height": HEIGHT},
+            user_agent=USER_AGENT,
+            java_script_enabled=True,
+            ignore_https_errors=True,
+            device_scale_factor=1.0
+        )
+        page = context.new_page()
+
+        total = len(rows)
+        for i,r in enumerate(rows,1):
+            url = clean_url(r["url"])
+            username = (r.get("username") or "").strip() or domain_from_url(url)
+            niche = r.get("niche", "").strip()
+            slug = safe_slug(username)
+            shot = outdir/f"{slug}.png"
+            outvid = outdir/f"{slug}.mp4"
+            thumbnail_file = outdir/f"{slug}.jpg"
+
+            print(f"[{i}/{total}] {url} | {username} | niche: {niche}")
+
+            if headless_mode:
+                overlay_path = overlays.get(niche)
+                if not overlay_path:
+                    print(f"   -> skipped (no overlay for niche: {niche})")
+                    results.append({
+                        "Website URL": url,
+                        "Instagram Username": username,
+                        "Niche": niche,
+                        "Video Link": "FAILED - Missing overlay"
+                    })
+                    continue
+            else:
+                overlay_path = overlays.get("default")
+
+            if not capture_fullpage_png(page,url,shot,WIDTH,HEIGHT):
+                print("   -> skipped (capture failed)")
+                results.append({
+                    "Website URL": url,
+                    "Instagram Username": username,
+                    "Niche": niche,
+                    "Video Link": "FAILED - Screenshot failed"
+                })
+                continue
+
+            if i % 50 == 0:
+                context.close()
+                browser.close()
+                browser = pw.chromium.launch(headless=True, args=["--disable-gpu","--no-sandbox"])
+                context = browser.new_context(
+                    viewport={"width": WIDTH, "height": HEIGHT},
+                    user_agent=USER_AGENT,
+                    java_script_enabled=True,
+                    ignore_https_errors=True,
+                    device_scale_factor=1.0
+                )
+                page = context.new_page()
+
+            overlay_path_opt = ensure_overlay_optimized(Path(overlay_path), outdir/"_cache")
+            
+            seg_sec = random.uniform(SEGMENT_MIN_SEC, SEGMENT_MAX_SEC)
+            video_start = time.time()
+            scroll = None
+            face_layer = None
+            comp = None
+            face_full = None
+            
+            try:
+                face_full = VideoFileClip(str(overlay_path_opt))
+                overlay_duration = float(face_full.duration or 30)
+                
+                # ✅ NEW: Create 5-second scroll and loop it
+                scroll_5sec = build_scrolling_clip(shot, WIDTH, HEIGHT, 5.0, FPS, seg_sec)
+                num_loops = int(overlay_duration / 5) + 1
+                scroll = scroll_5sec.loop(n=num_loops).set_duration(overlay_duration)
+                
+                layers = [scroll]
+
+                if face_full is not None:
+                    width_frac = OVERLAY_W_FRAC_BASE * (1.0 + random.uniform(-OVERLAY_W_JITTER, OVERLAY_W_JITTER))
+                    face_w = max(120, int(WIDTH * width_frac))
+                    scaled_h = int(face_full.h * (face_w / face_full.w))
+                    dx = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
+                    dy = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
+                    x = max(SCROLL_MARGIN, min(WIDTH - face_w - SCROLL_MARGIN, WIDTH - face_w - SCROLL_MARGIN + dx))
+                    y = max(SCROLL_MARGIN, min(HEIGHT - scaled_h - SCROLL_MARGIN, HEIGHT - scaled_h - SCROLL_MARGIN + dy))
+                    face_layer = face_full.resize(width=face_w).set_position((x, y)).subclip(0, overlay_duration)
+                    layers.append(face_layer)
+
+                comp = CompositeVideoClip(layers, size=(WIDTH, HEIGHT)).set_duration(overlay_duration)
+                if face_full is not None and face_full.audio is not None:
+                    comp = comp.set_audio(face_full.audio.subclip(0, overlay_duration))
+
+                final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
+
+                # ✅ NEW: Extract thumbnail
+                thumbnail_url = None
+                if extract_thumbnail(final_path, thumbnail_file):
+                    if r2_client:
+                        thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
+
+                # Upload video and create landing page
+                video_url = None
+                landing_url = None
+                if r2_client:
+                    video_url = upload_to_r2(r2_client, final_path, username)
+                    if video_url:
+                        landing_url = create_landing_page(r2_client, username, video_url, thumbnail_url or video_url)
+                        if landing_url:
+                            print(f"   -> landing page: {landing_url}")
+
+            except Exception as e:
+                msg = str(e)
+                if "Permission denied" in msg or "permission denied" in msg:
+                    try:
+                        alt = unique_path(outvid)
+                        print(f"   -> target locked; writing to {alt.name} instead")
+                        final_path = write_video_atomic(comp, alt, FPS, (face_full.audio if face_full else None), silent)
+                    except Exception as e2:
+                        print(f"   -> render failed: {e2}")
+                        results.append({
+                            "Website URL": url,
+                            "Instagram Username": username,
+                            "Niche": niche,
+                            "Video Link": f"FAILED - {str(e2)}"
+                        })
+                        continue
+                else:
+                    print(f"   -> render failed: {e}")
+                    results.append({
+                        "Website URL": url,
+                        "Instagram Username": username,
+                        "Niche": niche,
+                        "Video Link": f"FAILED - {str(e)}"
+                    })
+                    continue
+            finally:
+                try:
+                    if comp: comp.close()
+                except: pass
+                try:
+                    if face_layer: face_layer.close()
+                except: pass
+                try:
+                    if scroll: scroll.close()
+                except: pass
+                try:
+                    if face_full: face_full.close()
+                except: pass
+
+            per_video = time.time() - video_start
+            total_elapsed = time.time() - grand_start
+            print(f"   -> saved {Path(final_path).name} | {per_video:.1f}s | ⏱ {timedelta(seconds=int(total_elapsed))}")
+
+            result = {
+                "Website URL": url,
+                "Instagram Username": username,
+                "Niche": niche,
+                "Video Link": landing_url or Path(final_path).resolve().as_uri()
+            }
+            results.append(result)
+
+        context.close()
+        browser.close()
+
+    res_csv = outdir / f"RESULTS_worker{WORKER_ID}.csv"
+    try:
+        with open(res_csv, "w", encoding="utf-8", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=["Website URL","Instagram Username","Niche","Video Link"])
+            w.writeheader()
+            w.writerows(results)
+    except Exception as e:
+        print(f"[WARN] Could not write results CSV: {e}")
+
+    print(f"\n✅ Done. {len(results)}/{len(rows)} videos. Results: {res_csv}")
+    print(f"⏱️ Total elapsed: {timedelta(seconds=int(time.time()-grand_start))}")
+
+if __name__=="__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[ABORTED]")
