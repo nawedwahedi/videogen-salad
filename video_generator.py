@@ -7,15 +7,13 @@ from datetime import timedelta
 
 import numpy as np
 from PIL import Image
-from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip
+from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip, concatenate_videoclips
 from proglog import ProgressBarLogger
 from playwright.sync_api import sync_playwright
 
 # ================== TUNING ==================
-SEGMENT_MIN_SEC = 2  # Shorter pause at top
-SEGMENT_MAX_SEC = 3
 FPS             = 12
-WIDTH, HEIGHT   = 1280, 720  # ✅ UPGRADED TO 720p
+WIDTH, HEIGHT   = 1280, 720
 
 OVERLAY_W_FRAC_BASE = 0.24
 OVERLAY_W_JITTER    = 0.05
@@ -45,7 +43,6 @@ CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/heedeestudios/seo
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
               "AppleWebKit/537.36 (KHTML, like Gecko) "
               "Chrome/124.0.0.0 Safari/537.36")
-ZERO_WIDTH = ''.join(['\ufeff','\u200b','\u200c','\u200d','\u2060','\u200e','\u200f'])
 
 # ================== QUIET LOGGER ==================
 class SilentLogger(ProgressBarLogger):
@@ -137,12 +134,13 @@ def upload_thumbnail_to_r2(client, thumbnail_path, username):
         return None
 
 def extract_thumbnail(video_path, thumbnail_path):
-    """Extract thumbnail from video at 2 seconds"""
+    """Extract high-quality thumbnail from video at 5 seconds"""
     try:
         cmd = [
             "ffmpeg", "-y", "-i", str(video_path),
-            "-ss", "00:00:02",
+            "-ss", "00:00:05",
             "-vframes", "1",
+            "-vf", "scale=1280:-1",  # High resolution for social media
             "-q:v", "2",
             str(thumbnail_path)
         ]
@@ -153,104 +151,109 @@ def extract_thumbnail(video_path, thumbnail_path):
         return False
 
 def create_landing_page(client, username, video_url, thumbnail_url):
-    """Create landing page with Open Graph tags"""
+    """✅ REDESIGNED: Better layout, moved button up, cleaner design"""
     if client is None:
         return None
+    
+    # Ensure thumbnail URL has proper fallback
+    thumb_url = thumbnail_url if thumbnail_url else video_url
     
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video for {username}</title>
+    <title>Video Message for {username}</title>
     
-    <!-- Open Graph tags for social media -->
+    <!-- ✅ ENHANCED Open Graph tags for social media -->
     <meta property="og:title" content="I recorded this video for you">
-    <meta property="og:description" content="Personalized video message for {username}">
-    <meta property="og:image" content="{thumbnail_url}">
+    <meta property="og:description" content="Watch this personalized video message">
+    <meta property="og:image" content="{thumb_url}">
+    <meta property="og:image:width" content="1280">
+    <meta property="og:image:height" content="720">
     <meta property="og:video" content="{video_url}">
+    <meta property="og:video:type" content="video/mp4">
     <meta property="og:type" content="video.other">
-    <meta property="og:url" content="{R2_PUBLIC_URL}/{username}/index.html">
+    <meta property="og:url" content="{R2_PUBLIC_URL}/{username}">
     
     <!-- Twitter Card tags -->
     <meta name="twitter:card" content="player">
     <meta name="twitter:title" content="I recorded this video for you">
-    <meta name="twitter:description" content="Personalized video message">
-    <meta name="twitter:image" content="{thumbnail_url}">
+    <meta name="twitter:description" content="Watch this personalized video message">
+    <meta name="twitter:image" content="{thumb_url}">
+    <meta name="twitter:player" content="{video_url}">
+    <meta name="twitter:player:width" content="1280">
+    <meta name="twitter:player:height" content="720">
     
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #f5f5f5;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
             padding: 20px;
         }}
         .container {{
-            max-width: 1200px;
+            max-width: 900px;
             width: 100%;
             background: white;
-            border-radius: 12px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
             overflow: hidden;
         }}
-        h1 {{
+        .header {{
             text-align: center;
             padding: 40px 20px 20px;
+            background: linear-gradient(to bottom, #f8f9fa, white);
+        }}
+        h1 {{
             font-size: 2.5rem;
-            color: #333;
+            color: #2d3748;
+            margin-bottom: 10px;
         }}
         .subtitle {{
-            text-align: center;
-            padding: 0 20px 30px;
             font-size: 1.1rem;
-            color: #666;
+            color: #718096;
         }}
         .video-wrapper {{
             width: 100%;
-            padding: 0 40px 40px;
+            padding: 20px;
+            background: white;
         }}
         video {{
             width: 100%;
-            max-width: 100%;
-            border-radius: 8px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
         }}
         .cta-section {{
             text-align: center;
-            padding: 40px 20px;
-            background: #f9f9f9;
+            padding: 25px 20px 40px;
+            background: white;
         }}
         .cta-button {{
             display: inline-block;
-            background: #5b4cdb;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 16px 48px;
-            font-size: 1.1rem;
+            padding: 18px 50px;
+            font-size: 1.15rem;
             font-weight: 600;
             text-decoration: none;
-            border-radius: 8px;
+            border-radius: 50px;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 12px rgba(91,76,219,0.3);
+            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
         }}
         .cta-button:hover {{
-            background: #4a3dc4;
             transform: translateY(-2px);
-            box-shadow: 0 6px 16px rgba(91,76,219,0.4);
+            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
         }}
         @media (max-width: 768px) {{
-            h1 {{
-                font-size: 1.8rem;
-            }}
-            .video-wrapper {{
-                padding: 0 20px 30px;
-            }}
+            h1 {{ font-size: 2rem; }}
+            .video-wrapper {{ padding: 15px; }}
             .cta-button {{
-                padding: 14px 36px;
+                padding: 16px 40px;
                 font-size: 1rem;
             }}
         }}
@@ -258,10 +261,12 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </head>
 <body>
     <div class="container">
-        <h1>Hi there</h1>
-        <p class="subtitle">I recorded this video for you</p>
+        <div class="header">
+            <h1>Hi there</h1>
+            <p class="subtitle">I recorded this video for you</p>
+        </div>
         <div class="video-wrapper">
-            <video controls poster="{thumbnail_url}">
+            <video controls poster="{thumb_url}" preload="metadata">
                 <source src="{video_url}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
@@ -274,14 +279,27 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </html>"""
     
     try:
-        key = f"{username}/index.html"
+        # ✅ Upload to /username/index.html
+        key_with_html = f"{username}/index.html"
         client.put_object(
             Bucket=R2_BUCKET,
-            Key=key,
+            Key=key_with_html,
             Body=html.encode('utf-8'),
             ContentType='text/html'
         )
-        return f"{R2_PUBLIC_URL}/{username}/index.html"
+        
+        # ✅ ALSO upload to /username (no extension) for cleaner URLs
+        key_clean = f"{username}"
+        client.put_object(
+            Bucket=R2_BUCKET,
+            Key=key_clean,
+            Body=html.encode('utf-8'),
+            ContentType='text/html',
+            CacheControl='no-cache'
+        )
+        
+        # Return clean URL without /index.html
+        return f"{R2_PUBLIC_URL}/{username}"
     except Exception as e:
         print(f"   -> Landing page creation failed: {e}")
         return None
@@ -359,7 +377,7 @@ def load_rows(csv_path):
     return rows
 
 def capture_fullpage_png(page, url, out_png, width, height):
-    """✅ FIXED: Simple, reliable screenshot function"""
+    """Simple, reliable screenshot function"""
     try:
         page.goto(url, wait_until="domcontentloaded", timeout=30000)
         page.wait_for_timeout(2000)
@@ -369,12 +387,13 @@ def capture_fullpage_png(page, url, out_png, width, height):
         print(f"   -> screenshot failed: {e}")
         return False
 
-def build_scrolling_clip(png_path, w, h, duration, fps, seg_sec):
-    """✅ UPDATED: Create 5-second scroll animation"""
+def build_smooth_human_scroll(png_path, w, h, duration, fps):
+    """✅ NEW: Create smooth, human-like 10-second scroll"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
     if img_h <= h:
+        # Page too short, just show static
         static = np.zeros((h, w, 3), dtype=np.uint8)
         static[:img_h, :min(img_w, w)] = img[:, :min(img_w, w)]
         return VideoClip(lambda t: static, duration=duration).set_fps(fps)
@@ -382,13 +401,19 @@ def build_scrolling_clip(png_path, w, h, duration, fps, seg_sec):
     scroll_dist = img_h - h
     
     def make_frame(t):
-        if t < seg_sec:
-            pos = 0
-        elif t >= (duration - seg_sec):
-            pos = scroll_dist
+        # Smooth easing function (ease-in-out)
+        progress = t / duration
+        # Cubic easing for smooth motion
+        if progress < 0.5:
+            eased = 4 * progress * progress * progress
         else:
-            frac = (t - seg_sec) / (duration - 2*seg_sec)
-            pos = int(frac * scroll_dist)
+            eased = 1 - pow(-2 * progress + 2, 3) / 2
+        
+        pos = int(eased * scroll_dist)
+        
+        # Add small random jitter for human-like movement
+        jitter = int(random.gauss(0, 2))
+        pos = max(0, min(scroll_dist, pos + jitter))
         
         crop = img[pos:pos+h, :min(img_w, w)]
         if crop.shape[0] < h or crop.shape[1] < w:
@@ -427,7 +452,7 @@ def ensure_overlay_optimized(overlay_path, cache_dir):
         return overlay_path
 
 def write_video_atomic(comp, out_path, fps, audio_clip, logger):
-    """✅ FIXED: Includes pixel format and better quality"""
+    """Fixed: Includes pixel format and better quality"""
     temp = out_path.with_suffix(".tmp.mp4")
     
     try:
@@ -441,7 +466,7 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     
     if use_nvenc:
         vcodec = "h264_nvenc"
-        params = ["-preset","p4","-cq","18","-pix_fmt","yuv420p"]  # ✅ Better quality
+        params = ["-preset","p4","-cq","18","-pix_fmt","yuv420p"]
     else:
         vcodec = "libx264"
         params = ["-preset","fast","-crf","18"]
@@ -599,7 +624,6 @@ def main():
 
             overlay_path_opt = ensure_overlay_optimized(Path(overlay_path), outdir/"_cache")
             
-            seg_sec = random.uniform(SEGMENT_MIN_SEC, SEGMENT_MAX_SEC)
             video_start = time.time()
             scroll = None
             face_layer = None
@@ -610,10 +634,18 @@ def main():
                 face_full = VideoFileClip(str(overlay_path_opt))
                 overlay_duration = float(face_full.duration or 30)
                 
-                # ✅ NEW: Create 5-second scroll and loop it
-                scroll_5sec = build_scrolling_clip(shot, WIDTH, HEIGHT, 5.0, FPS, seg_sec)
-                num_loops = int(overlay_duration / 5) + 1
-                scroll = scroll_5sec.loop(n=num_loops).set_duration(overlay_duration)
+                # ✅ NEW: Create 10-second smooth scroll, then static for the rest
+                scroll_10sec = build_smooth_human_scroll(shot, WIDTH, HEIGHT, 10.0, FPS)
+                
+                # Get the last frame to use as static background
+                final_frame = scroll_10sec.get_frame(9.9)  # Frame at 9.9 seconds
+                static_duration = max(0, overlay_duration - 10)
+                
+                if static_duration > 0:
+                    static_clip = VideoClip(lambda t: final_frame, duration=static_duration).set_fps(FPS)
+                    scroll = concatenate_videoclips([scroll_10sec, static_clip])
+                else:
+                    scroll = scroll_10sec
                 
                 layers = [scroll]
 
@@ -634,7 +666,7 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # ✅ NEW: Extract thumbnail
+                # Extract thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
@@ -646,7 +678,7 @@ def main():
                 if r2_client:
                     video_url = upload_to_r2(r2_client, final_path, username)
                     if video_url:
-                        landing_url = create_landing_page(r2_client, username, video_url, thumbnail_url or video_url)
+                        landing_url = create_landing_page(r2_client, username, video_url, thumbnail_url)
                         if landing_url:
                             print(f"   -> landing page: {landing_url}")
 
