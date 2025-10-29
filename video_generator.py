@@ -117,7 +117,7 @@ def upload_to_r2(client, local_path, username):
         return None
 
 def upload_thumbnail_to_r2(client, thumbnail_path, username):
-    """Upload thumbnail to R2"""
+    """Upload high-quality thumbnail to R2 for social media previews"""
     if client is None:
         return None
     try:
@@ -126,7 +126,11 @@ def upload_thumbnail_to_r2(client, thumbnail_path, username):
             str(thumbnail_path),
             R2_BUCKET,
             key,
-            ExtraArgs={'ContentType': 'image/jpeg'}
+            ExtraArgs={
+                'ContentType': 'image/jpeg',
+                'CacheControl': 'public, max-age=31536000',
+                'ACL': 'public-read'
+            }
         )
         return f"{R2_PUBLIC_URL}/{username}/thumbnail.jpg"
     except Exception as e:
@@ -134,14 +138,14 @@ def upload_thumbnail_to_r2(client, thumbnail_path, username):
         return None
 
 def extract_thumbnail(video_path, thumbnail_path):
-    """Extract high-quality thumbnail from video at 5 seconds"""
+    """Extract high-quality thumbnail from video for social media"""
     try:
         cmd = [
             "ffmpeg", "-y", "-i", str(video_path),
             "-ss", "00:00:05",
             "-vframes", "1",
-            "-vf", "scale=1280:-1",  # High resolution for social media
-            "-q:v", "2",
+            "-vf", "scale=1280:-1",
+            "-q:v", "1",  # Highest quality
             str(thumbnail_path)
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -151,12 +155,12 @@ def extract_thumbnail(video_path, thumbnail_path):
         return False
 
 def create_landing_page(client, username, video_url, thumbnail_url):
-    """✅ REDESIGNED: Better layout, moved button up, cleaner design"""
+    """Create beautiful landing page with full social media support"""
     if client is None:
         return None
     
-    # Ensure thumbnail URL has proper fallback
     thumb_url = thumbnail_url if thumbnail_url else video_url
+    page_url = f"{R2_PUBLIC_URL}/{username}"
     
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -165,25 +169,39 @@ def create_landing_page(client, username, video_url, thumbnail_url):
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Video Message for {username}</title>
     
-    <!-- ✅ ENHANCED Open Graph tags for social media -->
+    <!-- Primary Meta Tags -->
+    <meta name="title" content="I recorded this video for you">
+    <meta name="description" content="Watch this personalized video message">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="video.other">
+    <meta property="og:url" content="{page_url}">
     <meta property="og:title" content="I recorded this video for you">
     <meta property="og:description" content="Watch this personalized video message">
     <meta property="og:image" content="{thumb_url}">
+    <meta property="og:image:secure_url" content="{thumb_url}">
+    <meta property="og:image:type" content="image/jpeg">
     <meta property="og:image:width" content="1280">
     <meta property="og:image:height" content="720">
     <meta property="og:video" content="{video_url}">
+    <meta property="og:video:secure_url" content="{video_url}">
     <meta property="og:video:type" content="video/mp4">
-    <meta property="og:type" content="video.other">
-    <meta property="og:url" content="{R2_PUBLIC_URL}/{username}">
+    <meta property="og:video:width" content="1280">
+    <meta property="og:video:height" content="720">
     
-    <!-- Twitter Card tags -->
-    <meta name="twitter:card" content="player">
-    <meta name="twitter:title" content="I recorded this video for you">
-    <meta name="twitter:description" content="Watch this personalized video message">
-    <meta name="twitter:image" content="{thumb_url}">
-    <meta name="twitter:player" content="{video_url}">
-    <meta name="twitter:player:width" content="1280">
-    <meta name="twitter:player:height" content="720">
+    <!-- Twitter -->
+    <meta property="twitter:card" content="player">
+    <meta property="twitter:url" content="{page_url}">
+    <meta property="twitter:title" content="I recorded this video for you">
+    <meta property="twitter:description" content="Watch this personalized video message">
+    <meta property="twitter:image" content="{thumb_url}">
+    <meta property="twitter:player" content="{video_url}">
+    <meta property="twitter:player:width" content="1280">
+    <meta property="twitter:player:height" content="720">
+    
+    <!-- WhatsApp / Instagram -->
+    <meta property="og:site_name" content="Personalized Video Message">
+    <link rel="image_src" href="{thumb_url}">
     
     <style>
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
@@ -266,7 +284,7 @@ def create_landing_page(client, username, video_url, thumbnail_url):
             <p class="subtitle">I recorded this video for you</p>
         </div>
         <div class="video-wrapper">
-            <video controls poster="{thumb_url}" preload="metadata">
+            <video controls poster="{thumb_url}" preload="metadata" playsinline>
                 <source src="{video_url}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
@@ -279,27 +297,27 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </html>"""
     
     try:
-        # ✅ Upload to /username/index.html
+        # Upload to /username/index.html
         key_with_html = f"{username}/index.html"
         client.put_object(
             Bucket=R2_BUCKET,
             Key=key_with_html,
             Body=html.encode('utf-8'),
-            ContentType='text/html'
+            ContentType='text/html',
+            CacheControl='public, max-age=3600'
         )
         
-        # ✅ ALSO upload to /username (no extension) for cleaner URLs
+        # Upload to /username for clean URLs
         key_clean = f"{username}"
         client.put_object(
             Bucket=R2_BUCKET,
             Key=key_clean,
             Body=html.encode('utf-8'),
             ContentType='text/html',
-            CacheControl='no-cache'
+            CacheControl='public, max-age=3600'
         )
         
-        # Return clean URL without /index.html
-        return f"{R2_PUBLIC_URL}/{username}"
+        return page_url
     except Exception as e:
         print(f"   -> Landing page creation failed: {e}")
         return None
@@ -387,32 +405,52 @@ def capture_fullpage_png(page, url, out_png, width, height):
         print(f"   -> screenshot failed: {e}")
         return False
 
-def build_smooth_human_scroll(png_path, w, h, duration, fps):
-    """✅ NEW: Create smooth, human-like 10-second scroll"""
+def build_human_scroll_with_variation(png_path, w, h, duration, fps):
+    """✅ PERFECT: Realistic human-like scroll with up/down movement over 10 seconds"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
     if img_h <= h:
-        # Page too short, just show static
         static = np.zeros((h, w, 3), dtype=np.uint8)
         static[:img_h, :min(img_w, w)] = img[:, :min(img_w, w)]
         return VideoClip(lambda t: static, duration=duration).set_fps(fps)
     
     scroll_dist = img_h - h
     
+    # Human-like scroll keyframes: slow start, direction changes, pauses, varied speed
+    keyframes = [
+        (0.0, 0.0),      # Start at top
+        (1.5, 0.08),     # Slow scroll down
+        (2.0, 0.06),     # Small scroll back up (checking something)
+        (3.5, 0.25),     # Continue down
+        (4.0, 0.27),     # Tiny adjustment
+        (5.5, 0.48),     # Mid-page
+        (6.0, 0.45),     # Small scroll back
+        (7.5, 0.65),     # Continue scrolling
+        (8.5, 0.75),     # Slowing down
+        (10.0, 0.80)     # End position (80% down page)
+    ]
+    
+    def interpolate_position(t):
+        for i in range(len(keyframes) - 1):
+            t1, pos1 = keyframes[i]
+            t2, pos2 = keyframes[i + 1]
+            if t <= t2:
+                progress = (t - t1) / (t2 - t1) if t2 != t1 else 0
+                # Ease-in-out for smooth motion
+                if progress < 0.5:
+                    eased = 2 * progress * progress
+                else:
+                    eased = 1 - pow(-2 * progress + 2, 2) / 2
+                return pos1 + (pos2 - pos1) * eased
+        return keyframes[-1][1]
+    
     def make_frame(t):
-        # Smooth easing function (ease-in-out)
-        progress = t / duration
-        # Cubic easing for smooth motion
-        if progress < 0.5:
-            eased = 4 * progress * progress * progress
-        else:
-            eased = 1 - pow(-2 * progress + 2, 3) / 2
+        pos_fraction = interpolate_position(min(t, duration))
+        pos = int(pos_fraction * scroll_dist)
         
-        pos = int(eased * scroll_dist)
-        
-        # Add small random jitter for human-like movement
-        jitter = int(random.gauss(0, 2))
+        # Micro-jitter for realism
+        jitter = int(random.gauss(0, 1.5))
         pos = max(0, min(scroll_dist, pos + jitter))
         
         crop = img[pos:pos+h, :min(img_w, w)]
@@ -634,11 +672,11 @@ def main():
                 face_full = VideoFileClip(str(overlay_path_opt))
                 overlay_duration = float(face_full.duration or 30)
                 
-                # ✅ NEW: Create 10-second smooth scroll, then static for the rest
-                scroll_10sec = build_smooth_human_scroll(shot, WIDTH, HEIGHT, 10.0, FPS)
+                # ✅ PERFECT: 10-second human-like scroll with up/down, then static
+                scroll_10sec = build_human_scroll_with_variation(shot, WIDTH, HEIGHT, 10.0, FPS)
                 
-                # Get the last frame to use as static background
-                final_frame = scroll_10sec.get_frame(9.9)  # Frame at 9.9 seconds
+                # Get final frame for static background
+                final_frame = scroll_10sec.get_frame(9.9)
                 static_duration = max(0, overlay_duration - 10)
                 
                 if static_duration > 0:
@@ -666,13 +704,13 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # Extract thumbnail
+                # ✅ Extract high-quality thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
 
-                # Upload video and create landing page
+                # ✅ Upload video and create landing page
                 video_url = None
                 landing_url = None
                 if r2_client:
