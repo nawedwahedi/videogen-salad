@@ -333,6 +333,25 @@ def create_landing_page(client, username, video_url, thumbnail_url):
         print(f"   [ERROR] Landing page creation failed: {e}")
         return None
 
+def upload_results_to_r2(client, results_csv_path):
+    """✅ NEW: Upload results CSV back to R2"""
+    if client is None:
+        return False
+    try:
+        key = f"results/RESULTS_worker{WORKER_ID}.csv"
+        print(f"[INFO] Uploading results CSV to R2: {key}")
+        client.upload_file(
+            str(results_csv_path),
+            R2_BUCKET,
+            key,
+            ExtraArgs={'ContentType': 'text/csv'}
+        )
+        print(f"[SUCCESS] Results uploaded: {R2_PUBLIC_URL}/{key}")
+        return True
+    except Exception as e:
+        print(f"[ERROR] Results upload failed: {e}")
+        return False
+
 # ================== HELPER FUNCTIONS ==================
 def check_nvenc():
     try:
@@ -432,7 +451,7 @@ def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
     return False
 
 def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
-    """✅ OPTIMIZED: Scroll down to END → back to MIDDLE → stay (10 seconds only)"""
+    """✅ Scroll down to END → back to MIDDLE → stay (10 seconds)"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -443,18 +462,17 @@ def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
     
     scroll_dist = img_h - h
     
-    # ✅ Scroll pattern: Down to END → Back to MIDDLE → Stay
     keyframes = [
-        (0.0, 0.0),      # Start at top
-        (1.5, 0.20),     # Scroll down
-        (3.0, 0.50),     # Continue down
-        (4.5, 0.80),     # Continue down
-        (5.5, 1.0),      # Reach BOTTOM/END
-        (6.5, 0.75),     # Scroll back up
-        (8.0, 0.50),     # Reach MIDDLE
-        (8.5, 0.48),     # Small adjustment
-        (9.0, 0.50),     # Final MIDDLE position
-        (10.0, 0.50)     # STAY at middle
+        (0.0, 0.0),
+        (1.5, 0.20),
+        (3.0, 0.50),
+        (4.5, 0.80),
+        (5.5, 1.0),
+        (6.5, 0.75),
+        (8.0, 0.50),
+        (8.5, 0.48),
+        (9.0, 0.50),
+        (10.0, 0.50)
     ]
     
     def interpolate_position(t):
@@ -463,7 +481,6 @@ def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
             t2, pos2 = keyframes[i + 1]
             if t <= t2:
                 progress = (t - t1) / (t2 - t1) if t2 != t1 else 0
-                # Smooth easing
                 if progress < 0.5:
                     eased = 2 * progress * progress
                 else:
@@ -475,7 +492,6 @@ def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
         pos_fraction = interpolate_position(min(t, duration))
         pos = int(pos_fraction * scroll_dist)
         
-        # Subtle jitter
         jitter = int(random.gauss(0, 1.0))
         pos = max(0, min(scroll_dist, pos + jitter))
         
@@ -701,15 +717,12 @@ def main():
                 
                 print(f"   [DEBUG] Overlay duration: {overlay_duration}s")
                 
-                # ✅ COST OPTIMIZATION: Only render 10-second scroll
                 scroll_10sec = build_scroll_to_end_then_middle(shot, WIDTH, HEIGHT, 10.0, FPS)
                 
-                # Get final middle frame for static extension
                 final_frame = scroll_10sec.get_frame(9.9)
                 static_duration = max(0, overlay_duration - 10)
                 
                 if static_duration > 0:
-                    # ✅ Create static clip from final frame (super fast!)
                     static_clip = ImageClip(final_frame, duration=static_duration).set_fps(FPS)
                     scroll = concatenate_videoclips([scroll_10sec, static_clip])
                 else:
@@ -724,7 +737,6 @@ def main():
                     dx = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
                     dy = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
                     
-                    # ✅ BOTTOM-LEFT positioning (visible in social media previews)
                     x = SCROLL_MARGIN + dx
                     y = HEIGHT - scaled_h - SCROLL_MARGIN + dy
                     x = max(SCROLL_MARGIN, min(WIDTH - face_w - SCROLL_MARGIN, x))
@@ -738,13 +750,11 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # Extract thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
 
-                # Upload video and create landing page
                 video_url = None
                 landing_url = None
                 if r2_client:
@@ -797,25 +807,34 @@ def main():
             total_elapsed = time.time() - grand_start
             print(f"   -> saved {Path(final_path).name} | {per_video:.1f}s | ⏱ {timedelta(seconds=int(total_elapsed))}")
 
+            # ✅ FIXED: Always add result with Video Link column
             result = {
                 "Website URL": url,
                 "Instagram Username": username,
                 "Niche": niche,
-                "Video Link": landing_url or Path(final_path).resolve().as_uri()
+                "Video Link": landing_url if landing_url else "FAILED - Upload error"
             }
             results.append(result)
 
         context.close()
         browser.close()
 
+    # ✅ FIXED: Proper CSV output with all columns
     res_csv = outdir / f"RESULTS_worker{WORKER_ID}.csv"
     try:
         with open(res_csv, "w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=["Website URL","Instagram Username","Niche","Video Link"])
+            fieldnames = ["Website URL", "Instagram Username", "Niche", "Video Link"]
+            w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             w.writerows(results)
+        print(f"[SUCCESS] Results CSV created: {res_csv}")
+        
+        # ✅ Upload results CSV back to R2
+        if headless_mode and r2_client:
+            upload_results_to_r2(r2_client, res_csv)
+            
     except Exception as e:
-        print(f"[WARN] Could not write results CSV: {e}")
+        print(f"[ERROR] Could not write results CSV: {e}")
 
     print(f"\n✅ Done. {len(results)}/{len(rows)} videos. Results: {res_csv}")
     print(f"⏱️ Total elapsed: {timedelta(seconds=int(time.time()-grand_start))}")
@@ -825,6 +844,3 @@ if __name__=="__main__":
         main()
     except KeyboardInterrupt:
         print("\n[ABORTED]")
-```
-
-
