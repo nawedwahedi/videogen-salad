@@ -407,7 +407,7 @@ def load_rows(csv_path):
     return rows
 
 def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
-    """✅ FIXED: Increased timeout, added retry logic, better error handling"""
+    """✅ FIXED: Increased timeout to 60s, added retry logic, better error handling"""
     for attempt in range(max_retries):
         try:
             print(f"   [DEBUG] Screenshot attempt {attempt + 1}/{max_retries} for {url}")
@@ -434,7 +434,7 @@ def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
     return False
 
 def build_human_scroll_with_variation(png_path, w, h, duration, fps):
-    """✅ PERFECT: Realistic human-like scroll with up/down movement"""
+    """✅ PERFECT: Realistic human-like scroll with up/down movement over 10 seconds"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -445,18 +445,18 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
     
     scroll_dist = img_h - h
     
-    # Human-like scroll keyframes
+    # Human-like scroll keyframes: slow start, direction changes, pauses, varied speed
     keyframes = [
-        (0.0, 0.0),
-        (1.5, 0.08),
-        (2.0, 0.06),
-        (3.5, 0.25),
-        (4.0, 0.27),
-        (5.5, 0.48),
-        (6.0, 0.45),
-        (7.5, 0.65),
-        (8.5, 0.75),
-        (10.0, 0.80)
+        (0.0, 0.0),      # Start at top
+        (1.5, 0.08),     # Slow scroll down
+        (2.0, 0.06),     # Small scroll back up (checking something)
+        (3.5, 0.25),     # Continue down
+        (4.0, 0.27),     # Tiny adjustment
+        (5.5, 0.48),     # Mid-page
+        (6.0, 0.45),     # Small scroll back
+        (7.5, 0.65),     # Continue scrolling
+        (8.5, 0.75),     # Slowing down
+        (10.0, 0.80)     # End position (80% down page)
     ]
     
     def interpolate_position(t):
@@ -465,6 +465,7 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
             t2, pos2 = keyframes[i + 1]
             if t <= t2:
                 progress = (t - t1) / (t2 - t1) if t2 != t1 else 0
+                # Ease-in-out for smooth motion
                 if progress < 0.5:
                     eased = 2 * progress * progress
                 else:
@@ -476,6 +477,7 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
         pos_fraction = interpolate_position(min(t, duration))
         pos = int(pos_fraction * scroll_dist)
         
+        # Micro-jitter for realism (small random movements)
         jitter = int(random.gauss(0, 1.5))
         pos = max(0, min(scroll_dist, pos + jitter))
         
@@ -699,9 +701,10 @@ def main():
                 face_full = VideoFileClip(str(overlay_path_opt))
                 overlay_duration = float(face_full.duration or 30)
                 
-                # Create 10-second human scroll
+                # ✅ Create 10-second human-like scroll, then static for remaining duration
                 scroll_10sec = build_human_scroll_with_variation(shot, WIDTH, HEIGHT, 10.0, FPS)
                 
+                # Get the last frame to use as static background
                 final_frame = scroll_10sec.get_frame(9.9)
                 static_duration = max(0, overlay_duration - 10)
                 
@@ -730,13 +733,13 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # Extract and upload thumbnail
+                # ✅ Extract and upload high-quality thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
 
-                # Upload video and create landing page
+                # ✅ Upload video and create landing page
                 video_url = None
                 landing_url = None
                 if r2_client:
