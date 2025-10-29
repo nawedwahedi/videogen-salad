@@ -827,18 +827,4 @@ if __name__=="__main__":
         print("\n[ABORTED]")
 ```
 
----
 
-## **💰 FINAL COST:**
-```
-Per video GPU work:
-- Screenshot: 10s
-- 10s scroll generation: 8s
-- Composite with facecam: 5s
-- Frame extraction + static extension: 2s
-Total: ~25 seconds GPU per video
-
-900,000 × 25s = 22.5M seconds
-= 6,250 GPU-hours
-× $0.02/hour
-= $125 for all 900k videos! ✅
