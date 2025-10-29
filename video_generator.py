@@ -101,61 +101,70 @@ def download_overlays_from_r2(csv_path, r2_client, bucket):
     return overlays
 
 def upload_to_r2(client, local_path, username):
+    """Upload video to R2 with proper content type"""
     if client is None:
         return None
     try:
         key = f"{username}/video.mp4"
+        print(f"   [DEBUG] Uploading video to R2: {key}")
         client.upload_file(
             str(local_path),
             R2_BUCKET,
             key,
-            ExtraArgs={'ContentType': 'video/mp4'}
+            ExtraArgs={
+                'ContentType': 'video/mp4',
+                'CacheControl': 'public, max-age=31536000'
+            }
         )
-        return f"{R2_PUBLIC_URL}/{username}/video.mp4"
+        url = f"{R2_PUBLIC_URL}/{key}"
+        print(f"   [DEBUG] Video uploaded successfully: {url}")
+        return url
     except Exception as e:
-        print(f"   -> R2 upload failed: {e}")
+        print(f"   [ERROR] R2 video upload failed: {e}")
         return None
 
 def upload_thumbnail_to_r2(client, thumbnail_path, username):
-    """Upload high-quality thumbnail to R2 for social media previews"""
+    """Upload high-quality thumbnail to R2"""
     if client is None:
         return None
     try:
         key = f"{username}/thumbnail.jpg"
+        print(f"   [DEBUG] Uploading thumbnail to R2: {key}")
         client.upload_file(
             str(thumbnail_path),
             R2_BUCKET,
             key,
             ExtraArgs={
                 'ContentType': 'image/jpeg',
-                'CacheControl': 'public, max-age=31536000',
-                'ACL': 'public-read'
+                'CacheControl': 'public, max-age=31536000'
             }
         )
-        return f"{R2_PUBLIC_URL}/{username}/thumbnail.jpg"
+        url = f"{R2_PUBLIC_URL}/{key}"
+        print(f"   [DEBUG] Thumbnail uploaded successfully: {url}")
+        return url
     except Exception as e:
-        print(f"   -> Thumbnail upload failed: {e}")
+        print(f"   [ERROR] Thumbnail upload failed: {e}")
         return None
 
 def extract_thumbnail(video_path, thumbnail_path):
-    """Extract high-quality thumbnail from video for social media"""
+    """Extract high-quality thumbnail from video"""
     try:
         cmd = [
             "ffmpeg", "-y", "-i", str(video_path),
             "-ss", "00:00:05",
             "-vframes", "1",
             "-vf", "scale=1280:-1",
-            "-q:v", "1",  # Highest quality
+            "-q:v", "1",
             str(thumbnail_path)
         ]
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return True
     except Exception as e:
-        print(f"   -> Thumbnail extraction failed: {e}")
+        print(f"   [ERROR] Thumbnail extraction failed: {e}")
         return False
 
 def create_landing_page(client, username, video_url, thumbnail_url):
-    """Create beautiful landing page with full social media support"""
+    """Create landing page with full social media support"""
     if client is None:
         return None
     
@@ -297,29 +306,32 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </html>"""
     
     try:
-        # Upload to /username/index.html
-        key_with_html = f"{username}/index.html"
+        # Upload index.html
+        key_html = f"{username}/index.html"
+        print(f"   [DEBUG] Uploading landing page to R2: {key_html}")
         client.put_object(
             Bucket=R2_BUCKET,
-            Key=key_with_html,
+            Key=key_html,
             Body=html.encode('utf-8'),
             ContentType='text/html',
             CacheControl='public, max-age=3600'
         )
         
-        # Upload to /username for clean URLs
-        key_clean = f"{username}"
+        # Also upload as root file for clean URLs
+        key_root = username
         client.put_object(
             Bucket=R2_BUCKET,
-            Key=key_clean,
+            Key=key_root,
             Body=html.encode('utf-8'),
             ContentType='text/html',
             CacheControl='public, max-age=3600'
         )
         
-        return page_url
+        final_url = f"{R2_PUBLIC_URL}/{username}/index.html"
+        print(f"   [DEBUG] Landing page uploaded: {final_url}")
+        return final_url
     except Exception as e:
-        print(f"   -> Landing page creation failed: {e}")
+        print(f"   [ERROR] Landing page creation failed: {e}")
         return None
 
 # ================== HELPER FUNCTIONS ==================
@@ -394,19 +406,35 @@ def load_rows(csv_path):
                 rows.append({"url": url, "username": username, "niche": niche})
     return rows
 
-def capture_fullpage_png(page, url, out_png, width, height):
-    """Simple, reliable screenshot function"""
-    try:
-        page.goto(url, wait_until="domcontentloaded", timeout=30000)
-        page.wait_for_timeout(2000)
-        page.screenshot(path=str(out_png), full_page=True)
-        return True
-    except Exception as e:
-        print(f"   -> screenshot failed: {e}")
-        return False
+def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
+    """✅ FIXED: Increased timeout, added retry logic, better error handling"""
+    for attempt in range(max_retries):
+        try:
+            print(f"   [DEBUG] Screenshot attempt {attempt + 1}/{max_retries} for {url}")
+            page.goto(url, wait_until="domcontentloaded", timeout=60000)
+            
+            # Wait for network to be mostly idle
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except:
+                print(f"   [WARN] Network not idle after 10s, continuing anyway")
+            
+            page.wait_for_timeout(2000)
+            page.screenshot(path=str(out_png), full_page=True)
+            print(f"   [DEBUG] Screenshot successful")
+            return True
+        except Exception as e:
+            print(f"   [WARN] Screenshot attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                print(f"   [INFO] Retrying in 3 seconds...")
+                time.sleep(3)
+            else:
+                print(f"   [ERROR] All screenshot attempts failed")
+                return False
+    return False
 
 def build_human_scroll_with_variation(png_path, w, h, duration, fps):
-    """✅ PERFECT: Realistic human-like scroll with up/down movement over 10 seconds"""
+    """✅ PERFECT: Realistic human-like scroll with up/down movement"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -417,18 +445,18 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
     
     scroll_dist = img_h - h
     
-    # Human-like scroll keyframes: slow start, direction changes, pauses, varied speed
+    # Human-like scroll keyframes
     keyframes = [
-        (0.0, 0.0),      # Start at top
-        (1.5, 0.08),     # Slow scroll down
-        (2.0, 0.06),     # Small scroll back up (checking something)
-        (3.5, 0.25),     # Continue down
-        (4.0, 0.27),     # Tiny adjustment
-        (5.5, 0.48),     # Mid-page
-        (6.0, 0.45),     # Small scroll back
-        (7.5, 0.65),     # Continue scrolling
-        (8.5, 0.75),     # Slowing down
-        (10.0, 0.80)     # End position (80% down page)
+        (0.0, 0.0),
+        (1.5, 0.08),
+        (2.0, 0.06),
+        (3.5, 0.25),
+        (4.0, 0.27),
+        (5.5, 0.48),
+        (6.0, 0.45),
+        (7.5, 0.65),
+        (8.5, 0.75),
+        (10.0, 0.80)
     ]
     
     def interpolate_position(t):
@@ -437,7 +465,6 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
             t2, pos2 = keyframes[i + 1]
             if t <= t2:
                 progress = (t - t1) / (t2 - t1) if t2 != t1 else 0
-                # Ease-in-out for smooth motion
                 if progress < 0.5:
                     eased = 2 * progress * progress
                 else:
@@ -449,7 +476,6 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
         pos_fraction = interpolate_position(min(t, duration))
         pos = int(pos_fraction * scroll_dist)
         
-        # Micro-jitter for realism
         jitter = int(random.gauss(0, 1.5))
         pos = max(0, min(scroll_dist, pos + jitter))
         
@@ -490,7 +516,7 @@ def ensure_overlay_optimized(overlay_path, cache_dir):
         return overlay_path
 
 def write_video_atomic(comp, out_path, fps, audio_clip, logger):
-    """Fixed: Includes pixel format and better quality"""
+    """Write video with proper encoding"""
     temp = out_path.with_suffix(".tmp.mp4")
     
     try:
@@ -507,7 +533,7 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
         params = ["-preset","p4","-cq","18","-pix_fmt","yuv420p"]
     else:
         vcodec = "libx264"
-        params = ["-preset","fast","-crf","18"]
+        params = ["-preset","fast","-crf","18","-pix_fmt","yuv420p"]
     
     comp.write_videofile(
         str(temp),
@@ -549,6 +575,7 @@ def main():
         
         print(f"[HEADLESS MODE] Worker {WORKER_ID}/{TOTAL_WORKERS}")
         print(f"[INFO] Calendly URL: {CALENDLY_URL}")
+        print(f"[INFO] R2 Public URL: {R2_PUBLIC_URL}")
         
         r2_client = setup_r2_client()
         if not r2_client:
@@ -621,7 +648,7 @@ def main():
             outvid = outdir/f"{slug}.mp4"
             thumbnail_file = outdir/f"{slug}.jpg"
 
-            print(f"[{i}/{total}] {url} | {username} | niche: {niche}")
+            print(f"\n[{i}/{total}] {url} | {username} | niche: {niche}")
 
             if headless_mode:
                 overlay_path = overlays.get(niche)
@@ -638,7 +665,7 @@ def main():
                 overlay_path = overlays.get("default")
 
             if not capture_fullpage_png(page,url,shot,WIDTH,HEIGHT):
-                print("   -> skipped (capture failed)")
+                print("   -> skipped (capture failed after retries)")
                 results.append({
                     "Website URL": url,
                     "Instagram Username": username,
@@ -672,10 +699,9 @@ def main():
                 face_full = VideoFileClip(str(overlay_path_opt))
                 overlay_duration = float(face_full.duration or 30)
                 
-                # ✅ PERFECT: 10-second human-like scroll with up/down, then static
+                # Create 10-second human scroll
                 scroll_10sec = build_human_scroll_with_variation(shot, WIDTH, HEIGHT, 10.0, FPS)
                 
-                # Get final frame for static background
                 final_frame = scroll_10sec.get_frame(9.9)
                 static_duration = max(0, overlay_duration - 10)
                 
@@ -704,13 +730,13 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # ✅ Extract high-quality thumbnail
+                # Extract and upload thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
 
-                # ✅ Upload video and create landing page
+                # Upload video and create landing page
                 video_url = None
                 landing_url = None
                 if r2_client:
