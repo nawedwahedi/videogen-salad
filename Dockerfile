@@ -1,8 +1,13 @@
 # Use SaladCloud's proven NVENC base image
 FROM saladtechnologies/ffmpeg-nvenc:1.0.0
+
 # ✅ NVENC already configured in base image
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
+
+# ✅ CRITICAL FIX: Tell MoviePy/imageio where to find NVENC-enabled FFmpeg
+ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
+ENV FFMPEG_BINARY=/usr/local/bin/ffmpeg
 
 # Prevent interactive prompts
 ENV DEBIAN_FRONTEND=noninteractive
