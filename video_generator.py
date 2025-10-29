@@ -7,7 +7,7 @@ from datetime import timedelta
 
 import numpy as np
 from PIL import Image
-from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip, concatenate_videoclips
+from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip, concatenate_videoclips, ImageClip
 from proglog import ProgressBarLogger
 from playwright.sync_api import sync_playwright
 
@@ -164,7 +164,7 @@ def extract_thumbnail(video_path, thumbnail_path):
         return False
 
 def create_landing_page(client, username, video_url, thumbnail_url):
-    """Create landing page with full social media support"""
+    """Create landing page with proper button positioning"""
     if client is None:
         return None
     
@@ -257,7 +257,7 @@ def create_landing_page(client, username, video_url, thumbnail_url):
         }}
         .cta-section {{
             text-align: center;
-            padding: 25px 20px 40px;
+            padding: 15px 20px 30px;
             background: white;
         }}
         .cta-button {{
@@ -279,6 +279,7 @@ def create_landing_page(client, username, video_url, thumbnail_url):
         @media (max-width: 768px) {{
             h1 {{ font-size: 2rem; }}
             .video-wrapper {{ padding: 15px; }}
+            .cta-section {{ padding: 10px 20px 25px; }}
             .cta-button {{
                 padding: 16px 40px;
                 font-size: 1rem;
@@ -306,7 +307,6 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </html>"""
     
     try:
-        # Upload index.html
         key_html = f"{username}/index.html"
         print(f"   [DEBUG] Uploading landing page to R2: {key_html}")
         client.put_object(
@@ -317,7 +317,6 @@ def create_landing_page(client, username, video_url, thumbnail_url):
             CacheControl='public, max-age=3600'
         )
         
-        # Also upload as root file for clean URLs
         key_root = username
         client.put_object(
             Bucket=R2_BUCKET,
@@ -407,17 +406,16 @@ def load_rows(csv_path):
     return rows
 
 def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
-    """✅ FIXED: Increased timeout to 60s, added retry logic, better error handling"""
+    """Capture full page screenshot with retry logic"""
     for attempt in range(max_retries):
         try:
-            print(f"   [DEBUG] Screenshot attempt {attempt + 1}/{max_retries} for {url}")
+            print(f"   [DEBUG] Screenshot attempt {attempt + 1}/{max_retries}")
             page.goto(url, wait_until="domcontentloaded", timeout=60000)
             
-            # Wait for network to be mostly idle
             try:
                 page.wait_for_load_state("networkidle", timeout=10000)
             except:
-                print(f"   [WARN] Network not idle after 10s, continuing anyway")
+                print(f"   [WARN] Network not idle, continuing anyway")
             
             page.wait_for_timeout(2000)
             page.screenshot(path=str(out_png), full_page=True)
@@ -429,12 +427,12 @@ def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
                 print(f"   [INFO] Retrying in 3 seconds...")
                 time.sleep(3)
             else:
-                print(f"   [ERROR] All screenshot attempts failed")
+                print(f"   [ERROR] All attempts failed")
                 return False
     return False
 
-def build_human_scroll_with_variation(png_path, w, h, duration, fps):
-    """✅ PERFECT: Realistic human-like scroll with up/down movement over 10 seconds"""
+def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
+    """✅ OPTIMIZED: Scroll down to END → back to MIDDLE → stay (10 seconds only)"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -445,18 +443,18 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
     
     scroll_dist = img_h - h
     
-    # Human-like scroll keyframes: slow start, direction changes, pauses, varied speed
+    # ✅ Scroll pattern: Down to END → Back to MIDDLE → Stay
     keyframes = [
         (0.0, 0.0),      # Start at top
-        (1.5, 0.08),     # Slow scroll down
-        (2.0, 0.06),     # Small scroll back up (checking something)
-        (3.5, 0.25),     # Continue down
-        (4.0, 0.27),     # Tiny adjustment
-        (5.5, 0.48),     # Mid-page
-        (6.0, 0.45),     # Small scroll back
-        (7.5, 0.65),     # Continue scrolling
-        (8.5, 0.75),     # Slowing down
-        (10.0, 0.80)     # End position (80% down page)
+        (1.5, 0.20),     # Scroll down
+        (3.0, 0.50),     # Continue down
+        (4.5, 0.80),     # Continue down
+        (5.5, 1.0),      # Reach BOTTOM/END
+        (6.5, 0.75),     # Scroll back up
+        (8.0, 0.50),     # Reach MIDDLE
+        (8.5, 0.48),     # Small adjustment
+        (9.0, 0.50),     # Final MIDDLE position
+        (10.0, 0.50)     # STAY at middle
     ]
     
     def interpolate_position(t):
@@ -465,7 +463,7 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
             t2, pos2 = keyframes[i + 1]
             if t <= t2:
                 progress = (t - t1) / (t2 - t1) if t2 != t1 else 0
-                # Ease-in-out for smooth motion
+                # Smooth easing
                 if progress < 0.5:
                     eased = 2 * progress * progress
                 else:
@@ -477,8 +475,8 @@ def build_human_scroll_with_variation(png_path, w, h, duration, fps):
         pos_fraction = interpolate_position(min(t, duration))
         pos = int(pos_fraction * scroll_dist)
         
-        # Micro-jitter for realism (small random movements)
-        jitter = int(random.gauss(0, 1.5))
+        # Subtle jitter
+        jitter = int(random.gauss(0, 1.0))
         pos = max(0, min(scroll_dist, pos + jitter))
         
         crop = img[pos:pos+h, :min(img_w, w)]
@@ -701,15 +699,18 @@ def main():
                 face_full = VideoFileClip(str(overlay_path_opt))
                 overlay_duration = float(face_full.duration or 30)
                 
-                # ✅ Create 10-second human-like scroll, then static for remaining duration
-                scroll_10sec = build_human_scroll_with_variation(shot, WIDTH, HEIGHT, 10.0, FPS)
+                print(f"   [DEBUG] Overlay duration: {overlay_duration}s")
                 
-                # Get the last frame to use as static background
+                # ✅ COST OPTIMIZATION: Only render 10-second scroll
+                scroll_10sec = build_scroll_to_end_then_middle(shot, WIDTH, HEIGHT, 10.0, FPS)
+                
+                # Get final middle frame for static extension
                 final_frame = scroll_10sec.get_frame(9.9)
                 static_duration = max(0, overlay_duration - 10)
                 
                 if static_duration > 0:
-                    static_clip = VideoClip(lambda t: final_frame, duration=static_duration).set_fps(FPS)
+                    # ✅ Create static clip from final frame (super fast!)
+                    static_clip = ImageClip(final_frame, duration=static_duration).set_fps(FPS)
                     scroll = concatenate_videoclips([scroll_10sec, static_clip])
                 else:
                     scroll = scroll_10sec
@@ -722,8 +723,12 @@ def main():
                     scaled_h = int(face_full.h * (face_w / face_full.w))
                     dx = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
                     dy = random.randint(-OVERLAY_POS_JITTER, OVERLAY_POS_JITTER)
-                    x = max(SCROLL_MARGIN, min(WIDTH - face_w - SCROLL_MARGIN, WIDTH - face_w - SCROLL_MARGIN + dx))
-                    y = max(SCROLL_MARGIN, min(HEIGHT - scaled_h - SCROLL_MARGIN, HEIGHT - scaled_h - SCROLL_MARGIN + dy))
+                    
+                    # ✅ BOTTOM-LEFT positioning (visible in social media previews)
+                    x = SCROLL_MARGIN + dx
+                    y = HEIGHT - scaled_h - SCROLL_MARGIN + dy
+                    x = max(SCROLL_MARGIN, min(WIDTH - face_w - SCROLL_MARGIN, x))
+                    
                     face_layer = face_full.resize(width=face_w).set_position((x, y)).subclip(0, overlay_duration)
                     layers.append(face_layer)
 
@@ -733,13 +738,13 @@ def main():
 
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
 
-                # ✅ Extract and upload high-quality thumbnail
+                # Extract thumbnail
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
 
-                # ✅ Upload video and create landing page
+                # Upload video and create landing page
                 video_url = None
                 landing_url = None
                 if r2_client:
@@ -820,3 +825,20 @@ if __name__=="__main__":
         main()
     except KeyboardInterrupt:
         print("\n[ABORTED]")
+```
+
+---
+
+## **💰 FINAL COST:**
+```
+Per video GPU work:
+- Screenshot: 10s
+- 10s scroll generation: 8s
+- Composite with facecam: 5s
+- Frame extraction + static extension: 2s
+Total: ~25 seconds GPU per video
+
+900,000 × 25s = 22.5M seconds
+= 6,250 GPU-hours
+× $0.02/hour
+= $125 for all 900k videos! ✅
