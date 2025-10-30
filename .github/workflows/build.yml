@@ -21,3 +21,4 @@ jobs:
           context: .
           push: true
           tags: nawedwahedi/videogen-salad:v21
+```
