@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 import os, csv, time, hashlib, subprocess, re, random, shutil
 from pathlib import Path
 from datetime import timedelta
-
 import numpy as np
 from PIL import Image
 from moviepy.editor import VideoFileClip, CompositeVideoClip, VideoClip, concatenate_videoclips, ImageClip
@@ -14,12 +12,10 @@ from playwright.sync_api import sync_playwright
 # ================== TUNING ==================
 FPS             = 12
 WIDTH, HEIGHT   = 1280, 720
-
 OVERLAY_W_FRAC_BASE = 0.24
 OVERLAY_W_JITTER    = 0.05
 OVERLAY_POS_JITTER  = 10
 SCROLL_MARGIN       = 28
-
 DO_COMPRESS_OVERLAY = True
 OVERLAY_TARGET_W = 1280
 OVERLAY_V_KBPS   = 600
@@ -164,7 +160,7 @@ def extract_thumbnail(video_path, thumbnail_path):
         return False
 
 def create_landing_page(client, username, video_url, thumbnail_url):
-    """Create landing page with proper button positioning"""
+    """Create landing page with WHITE background and clean URLs"""
     if client is None:
         return None
     
@@ -216,7 +212,7 @@ def create_landing_page(client, username, video_url, thumbnail_url):
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #ffffff;
             min-height: 100vh;
             display: flex;
             align-items: center;
@@ -224,62 +220,51 @@ def create_landing_page(client, username, video_url, thumbnail_url):
             padding: 20px;
         }}
         .container {{
-            max-width: 900px;
+            max-width: 1200px;
             width: 100%;
-            background: white;
-            border-radius: 16px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
-        }}
-        .header {{
             text-align: center;
-            padding: 40px 20px 20px;
-            background: linear-gradient(to bottom, #f8f9fa, white);
         }}
         h1 {{
-            font-size: 2.5rem;
-            color: #2d3748;
-            margin-bottom: 10px;
+            font-size: 3rem;
+            color: #000000;
+            margin-bottom: 15px;
+            font-weight: 600;
         }}
         .subtitle {{
-            font-size: 1.1rem;
-            color: #718096;
+            font-size: 1.2rem;
+            color: #666666;
+            margin-bottom: 40px;
         }}
         .video-wrapper {{
             width: 100%;
-            padding: 20px;
-            background: white;
+            max-width: 900px;
+            margin: 0 auto 40px;
         }}
         video {{
             width: 100%;
             border-radius: 12px;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
-        }}
-        .cta-section {{
-            text-align: center;
-            padding: 15px 20px 30px;
-            background: white;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.1);
         }}
         .cta-button {{
             display: inline-block;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #6366F1;
             color: white;
-            padding: 18px 50px;
-            font-size: 1.15rem;
-            font-weight: 600;
+            padding: 18px 48px;
+            font-size: 1.1rem;
+            font-weight: 500;
             text-decoration: none;
-            border-radius: 50px;
+            border-radius: 8px;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.3);
         }}
         .cta-button:hover {{
+            background: #4F46E5;
             transform: translateY(-2px);
-            box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
+            box-shadow: 0 6px 16px rgba(99, 102, 241, 0.4);
         }}
         @media (max-width: 768px) {{
             h1 {{ font-size: 2rem; }}
-            .video-wrapper {{ padding: 15px; }}
-            .cta-section {{ padding: 10px 20px 25px; }}
+            .subtitle {{ font-size: 1rem; }}
             .cta-button {{
                 padding: 16px 40px;
                 font-size: 1rem;
@@ -289,44 +274,43 @@ def create_landing_page(client, username, video_url, thumbnail_url):
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>Hi there</h1>
-            <p class="subtitle">I recorded this video for you</p>
-        </div>
+        <h1>Hi there</h1>
+        <p class="subtitle">I recorded this video for you</p>
         <div class="video-wrapper">
             <video controls poster="{thumb_url}" preload="metadata" playsinline>
                 <source src="{video_url}" type="video/mp4">
                 Your browser does not support the video tag.
             </video>
         </div>
-        <div class="cta-section">
-            <a href="{CALENDLY_URL}" class="cta-button">Book a FREE 10 Minute Call</a>
-        </div>
+        <a href="{CALENDLY_URL}" class="cta-button">Book a FREE 10 Minute Call</a>
     </div>
 </body>
 </html>"""
     
     try:
-        key_html = f"{username}/index.html"
-        print(f"   [DEBUG] Uploading landing page to R2: {key_html}")
+        # Upload as username/index.html (standard location)
+        key_index = f"{username}/index.html"
+        print(f"   [DEBUG] Uploading landing page to R2: {key_index}")
         client.put_object(
             Bucket=R2_BUCKET,
-            Key=key_html,
+            Key=key_index,
             Body=html.encode('utf-8'),
             ContentType='text/html',
             CacheControl='public, max-age=3600'
         )
         
-        key_root = username
+        # Upload as username (for clean URL without extension)
+        key_clean = username
         client.put_object(
             Bucket=R2_BUCKET,
-            Key=key_root,
+            Key=key_clean,
             Body=html.encode('utf-8'),
             ContentType='text/html',
             CacheControl='public, max-age=3600'
         )
         
-        final_url = f"{R2_PUBLIC_URL}/{username}/index.html"
+        # Return clean URL (without /index.html)
+        final_url = f"{R2_PUBLIC_URL}/{username}"
         print(f"   [DEBUG] Landing page uploaded: {final_url}")
         return final_url
     except Exception as e:
@@ -334,7 +318,7 @@ def create_landing_page(client, username, video_url, thumbnail_url):
         return None
 
 def upload_results_to_r2(client, results_csv_path):
-    """✅ NEW: Upload results CSV back to R2"""
+    """Upload results CSV back to R2"""
     if client is None:
         return False
     try:
@@ -350,6 +334,84 @@ def upload_results_to_r2(client, results_csv_path):
         return True
     except Exception as e:
         print(f"[ERROR] Results upload failed: {e}")
+        return False
+
+def merge_all_results(client):
+    """AUTO-MERGE: Merge all worker results into masteroutput.csv"""
+    print("\n" + "="*60)
+    print("🔄 AUTO-MERGE STARTING - Combining all worker results...")
+    print("="*60)
+    
+    try:
+        # List all worker result files
+        response = client.list_objects_v2(Bucket=R2_BUCKET, Prefix='results/RESULTS_worker')
+        files = response.get('Contents', [])
+        
+        if not files:
+            print("[WARN] No result files found to merge")
+            return False
+        
+        print(f"[INFO] Found {len(files)} worker result files")
+        
+        all_results = []
+        successful_files = 0
+        
+        # Download and merge all CSVs
+        for i, obj in enumerate(files, 1):
+            key = obj['Key']
+            print(f"[{i}/{len(files)}] Merging {key}...")
+            
+            try:
+                # Download CSV to temp file
+                temp_file = f"/tmp/temp_worker_{i}.csv"
+                client.download_file(R2_BUCKET, key, temp_file)
+                
+                # Read and append rows
+                with open(temp_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        all_results.append(row)
+                
+                successful_files += 1
+                os.remove(temp_file)
+            except Exception as e:
+                print(f"   [WARN] Failed to process {key}: {e}")
+                continue
+        
+        if not all_results:
+            print("[ERROR] No results to merge")
+            return False
+        
+        # Write merged CSV locally
+        merged_file = '/tmp/masteroutput.csv'
+        print(f"\n[INFO] Writing merged results: {len(all_results)} total rows from {successful_files} files")
+        
+        with open(merged_file, 'w', encoding='utf-8', newline='') as f:
+            fieldnames = ["Website URL", "Instagram Username", "Niche", "Video Link"]
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(all_results)
+        
+        # Upload merged results to R2
+        print("[INFO] Uploading masteroutput.csv to R2...")
+        client.upload_file(
+            merged_file,
+            R2_BUCKET,
+            'masteroutput.csv',
+            ExtraArgs={'ContentType': 'text/csv'}
+        )
+        
+        print("\n" + "="*60)
+        print(f"✅ AUTO-MERGE COMPLETE!")
+        print(f"   📊 Total rows: {len(all_results)}")
+        print(f"   📁 Files merged: {successful_files}/{len(files)}")
+        print(f"   🔗 Output: {R2_PUBLIC_URL}/masteroutput.csv")
+        print("="*60 + "\n")
+        
+        return True
+        
+    except Exception as e:
+        print(f"[ERROR] Auto-merge failed: {e}")
         return False
 
 # ================== HELPER FUNCTIONS ==================
@@ -451,7 +513,7 @@ def capture_fullpage_png(page, url, out_png, width, height, max_retries=2):
     return False
 
 def build_scroll_to_end_then_middle(png_path, w, h, duration, fps):
-    """✅ Scroll down to END → back to MIDDLE → stay (10 seconds)"""
+    """Scroll down to END → back to MIDDLE → stay (10 seconds)"""
     img = np.array(Image.open(png_path).convert("RGB"))
     img_h, img_w, _ = img.shape
     
@@ -626,23 +688,24 @@ def main():
             return
         r2_client = setup_r2_client()
         overlays = {"default": overlay_src}
-
+    
     rows = load_rows(csv_path)
     if not rows:
         print("[ERROR] No valid rows in CSV.")
         return
-
+    
     if r2_client:
         print("[INFO] R2 upload enabled")
     else:
         print("[INFO] R2 upload disabled")
-
+    
     print(f"[INFO] {len(rows)} rows | {WIDTH}x{HEIGHT}@{FPS}")
+    
     outdir.mkdir(parents=True,exist_ok=True)
     silent = SilentLogger()
     grand_start = time.time()
     results = []
-
+    
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--disable-gpu","--no-sandbox"])
         context = browser.new_context(
@@ -653,7 +716,7 @@ def main():
             device_scale_factor=1.0
         )
         page = context.new_page()
-
+        
         total = len(rows)
         for i,r in enumerate(rows,1):
             url = clean_url(r["url"])
@@ -663,9 +726,9 @@ def main():
             shot = outdir/f"{slug}.png"
             outvid = outdir/f"{slug}.mp4"
             thumbnail_file = outdir/f"{slug}.jpg"
-
+            
             print(f"\n[{i}/{total}] {url} | {username} | niche: {niche}")
-
+            
             if headless_mode:
                 overlay_path = overlays.get(niche)
                 if not overlay_path:
@@ -679,7 +742,7 @@ def main():
                     continue
             else:
                 overlay_path = overlays.get("default")
-
+            
             if not capture_fullpage_png(page,url,shot,WIDTH,HEIGHT):
                 print("   -> skipped (capture failed after retries)")
                 results.append({
@@ -689,7 +752,7 @@ def main():
                     "Video Link": "FAILED - Screenshot failed"
                 })
                 continue
-
+            
             if i % 50 == 0:
                 context.close()
                 browser.close()
@@ -702,7 +765,7 @@ def main():
                     device_scale_factor=1.0
                 )
                 page = context.new_page()
-
+            
             overlay_path_opt = ensure_overlay_optimized(Path(overlay_path), outdir/"_cache")
             
             video_start = time.time()
@@ -729,7 +792,6 @@ def main():
                     scroll = scroll_10sec
                 
                 layers = [scroll]
-
                 if face_full is not None:
                     width_frac = OVERLAY_W_FRAC_BASE * (1.0 + random.uniform(-OVERLAY_W_JITTER, OVERLAY_W_JITTER))
                     face_w = max(120, int(WIDTH * width_frac))
@@ -743,18 +805,18 @@ def main():
                     
                     face_layer = face_full.resize(width=face_w).set_position((x, y)).subclip(0, overlay_duration)
                     layers.append(face_layer)
-
+                
                 comp = CompositeVideoClip(layers, size=(WIDTH, HEIGHT)).set_duration(overlay_duration)
                 if face_full is not None and face_full.audio is not None:
                     comp = comp.set_audio(face_full.audio.subclip(0, overlay_duration))
-
+                
                 final_path = write_video_atomic(comp, outvid, FPS, (face_full.audio if face_full else None), silent)
-
+                
                 thumbnail_url = None
                 if extract_thumbnail(final_path, thumbnail_file):
                     if r2_client:
                         thumbnail_url = upload_thumbnail_to_r2(r2_client, thumbnail_file, username)
-
+                
                 video_url = None
                 landing_url = None
                 if r2_client:
@@ -763,7 +825,7 @@ def main():
                         landing_url = create_landing_page(r2_client, username, video_url, thumbnail_url)
                         if landing_url:
                             print(f"   -> landing page: {landing_url}")
-
+                
             except Exception as e:
                 msg = str(e)
                 if "Permission denied" in msg or "permission denied" in msg:
@@ -802,12 +864,12 @@ def main():
                 try:
                     if face_full: face_full.close()
                 except: pass
-
+            
             per_video = time.time() - video_start
             total_elapsed = time.time() - grand_start
             print(f"   -> saved {Path(final_path).name} | {per_video:.1f}s | ⏱ {timedelta(seconds=int(total_elapsed))}")
-
-            # ✅ FIXED: Always add result with Video Link column
+            
+            # Add result with Video Link column
             result = {
                 "Website URL": url,
                 "Instagram Username": username,
@@ -815,11 +877,11 @@ def main():
                 "Video Link": landing_url if landing_url else "FAILED - Upload error"
             }
             results.append(result)
-
+        
         context.close()
         browser.close()
-
-    # ✅ FIXED: Proper CSV output with all columns
+    
+    # Write results CSV with Video Link column
     res_csv = outdir / f"RESULTS_worker{WORKER_ID}.csv"
     try:
         with open(res_csv, "w", encoding="utf-8", newline="") as f:
@@ -829,13 +891,19 @@ def main():
             w.writerows(results)
         print(f"[SUCCESS] Results CSV created: {res_csv}")
         
-        # ✅ Upload results CSV back to R2
+        # Upload results CSV back to R2
         if headless_mode and r2_client:
             upload_results_to_r2(r2_client, res_csv)
             
     except Exception as e:
         print(f"[ERROR] Could not write results CSV: {e}")
-
+    
+    # AUTO-MERGE: Last worker merges all results into masteroutput.csv
+    if headless_mode and r2_client and WORKER_ID == TOTAL_WORKERS - 1:
+        print("\n⏳ This is the last worker - waiting 30 seconds for other workers to finish...")
+        time.sleep(30)
+        merge_all_results(r2_client)
+    
     print(f"\n✅ Done. {len(results)}/{len(rows)} videos. Results: {res_csv}")
     print(f"⏱️ Total elapsed: {timedelta(seconds=int(time.time()-grand_start))}")
 
