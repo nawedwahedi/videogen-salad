@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Video Generator with Container Group Support
-Fixes:
-- Better screenshot logic with retries
-- Container group output system
-- Configurable CSV input
-- Improved page load detection
+Video Generator v21 - Enhanced with Progress Tracking
+Features:
+- Real-time progress tracking (X done out of Y)
+- Crash resilience with skip completed videos
+- Progress status file
+- Better error handling and retries
+- Resume from where it left off
 """
 
 import os
@@ -14,6 +15,7 @@ import csv
 import time
 import boto3
 import asyncio
+import json
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
@@ -40,10 +42,11 @@ WIDTH = int(os.getenv("WIDTH", "1280"))
 HEIGHT = int(os.getenv("HEIGHT", "720"))
 FPS = int(os.getenv("FPS", "12"))
 
-# Screenshot settings - increased for reliability
+# Enhanced settings
 SCREENSHOT_MAX_WAIT = 45000  # 45 seconds
 NETWORK_IDLE_TIMEOUT = 10000  # 10 seconds
 SCREENSHOT_RETRIES = 3
+PROGRESS_UPDATE_INTERVAL = 5  # Update progress every 5 videos
 
 # ================================
 # S3/R2 CLIENT
@@ -57,133 +60,270 @@ s3 = boto3.client(
 )
 
 # ================================
+# PROGRESS TRACKING
+# ================================
+class ProgressTracker:
+    def __init__(self, worker_id, container_group_id, total_videos):
+        self.worker_id = worker_id
+        self.container_group_id = container_group_id
+        self.total_videos = total_videos
+        self.completed = 0
+        self.failed = 0
+        self.skipped = 0
+        self.start_time = time.time()
+        
+        # Progress file names
+        self.progress_key = f"progress/worker_{worker_id}_container_{container_group_id}.json"
+        self.status_key = f"status/container_{container_group_id}_status.json"
+    
+    def load_progress(self):
+        """Load existing progress from R2"""
+        try:
+            temp_file = OUTPUT_DIR / "progress.json"
+            s3.download_file(R2_BUCKET, self.progress_key, str(temp_file))
+            with open(temp_file, 'r') as f:
+                data = json.load(f)
+                self.completed = data.get('completed', 0)
+                self.failed = data.get('failed', 0)
+                self.skipped = data.get('skipped', 0)
+            temp_file.unlink()
+            log(f"📊 Loaded progress: {self.completed} completed, {self.failed} failed, {self.skipped} skipped")
+        except:
+            log("📊 No previous progress found, starting fresh")
+    
+    def save_progress(self):
+        """Save current progress to R2"""
+        progress_data = {
+            'worker_id': self.worker_id,
+            'container_group_id': self.container_group_id,
+            'total_videos': self.total_videos,
+            'completed': self.completed,
+            'failed': self.failed,
+            'skipped': self.skipped,
+            'last_updated': time.time(),
+            'runtime_minutes': (time.time() - self.start_time) / 60
+        }
+        
+        try:
+            temp_file = OUTPUT_DIR / "progress.json"
+            with open(temp_file, 'w') as f:
+                json.dump(progress_data, f, indent=2)
+            upload_to_r2(temp_file, self.progress_key, "application/json")
+            temp_file.unlink()
+        except Exception as e:
+            log(f"[WARN] Failed to save progress: {e}")
+    
+    def update_status(self):
+        """Update overall container group status"""
+        try:
+            elapsed = time.time() - self.start_time
+            rate = self.completed / (elapsed / 3600) if elapsed > 0 else 0
+            eta_hours = (self.total_videos - self.completed) / rate if rate > 0 else 0
+            
+            status_data = {
+                'container_group_id': self.container_group_id,
+                'worker_id': self.worker_id,
+                'progress': f"{self.completed}/{self.total_videos}",
+                'completion_rate': f"{(self.completed/self.total_videos)*100:.1f}%",
+                'videos_per_hour': f"{rate:.1f}",
+                'eta_hours': f"{eta_hours:.1f}h",
+                'failed': self.failed,
+                'skipped': self.skipped,
+                'last_updated': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'runtime_minutes': f"{elapsed/60:.1f}min"
+            }
+            
+            temp_file = OUTPUT_DIR / "status.json"
+            with open(temp_file, 'w') as f:
+                json.dump(status_data, f, indent=2)
+            upload_to_r2(temp_file, self.status_key, "application/json")
+            temp_file.unlink()
+            
+            # Log progress
+            log(f"🎯 PROGRESS: {self.completed}/{self.total_videos} ({(self.completed/self.total_videos)*100:.1f}%) | Rate: {rate:.1f}/hr | ETA: {eta_hours:.1f}h")
+            
+        except Exception as e:
+            log(f"[WARN] Failed to update status: {e}")
+    
+    def mark_completed(self):
+        self.completed += 1
+        if self.completed % PROGRESS_UPDATE_INTERVAL == 0:
+            self.save_progress()
+            self.update_status()
+    
+    def mark_failed(self):
+        self.failed += 1
+        if (self.completed + self.failed) % PROGRESS_UPDATE_INTERVAL == 0:
+            self.save_progress()
+            self.update_status()
+    
+    def mark_skipped(self):
+        self.skipped += 1
+
+# ================================
 # HELPER FUNCTIONS
 # ================================
 def log(msg):
-    """Thread-safe logging"""
-    print(f"[{time.strftime('%H:%M:%S')}] {msg}", flush=True)
+    """Enhanced logging with timestamps"""
+    timestamp = time.strftime('%H:%M:%S')
+    print(f"[{timestamp}] {msg}", flush=True)
 
-def download_from_r2(key, local_path):
-    """Download file from R2"""
-    try:
-        s3.download_file(R2_BUCKET, key, str(local_path))
-        return True
-    except Exception as e:
-        log(f"[ERROR] Failed to download {key}: {e}")
-        return False
+def download_from_r2(key, local_path, retries=3):
+    """Download file from R2 with retries"""
+    for attempt in range(retries):
+        try:
+            s3.download_file(R2_BUCKET, key, str(local_path))
+            return True
+        except Exception as e:
+            if attempt < retries - 1:
+                log(f"[RETRY] Download failed (attempt {attempt + 1}/{retries}): {e}")
+                time.sleep(2 ** attempt)
+            else:
+                log(f"[ERROR] Failed to download {key} after {retries} attempts: {e}")
+                return False
 
-def upload_to_r2(local_path, key, content_type="application/octet-stream"):
-    """Upload file to R2"""
+def upload_to_r2(local_path, key, content_type="application/octet-stream", retries=3):
+    """Upload file to R2 with retries"""
+    for attempt in range(retries):
+        try:
+            s3.upload_file(
+                str(local_path),
+                R2_BUCKET,
+                key,
+                ExtraArgs={"ContentType": content_type}
+            )
+            return True
+        except Exception as e:
+            if attempt < retries - 1:
+                log(f"[RETRY] Upload failed (attempt {attempt + 1}/{retries}): {e}")
+                time.sleep(2 ** attempt)
+            else:
+                log(f"[ERROR] Failed to upload {key} after {retries} attempts: {e}")
+                return False
+
+def video_exists_in_r2(slug):
+    """Check if video already exists in R2"""
     try:
-        s3.upload_file(
-            str(local_path),
-            R2_BUCKET,
-            key,
-            ExtraArgs={"ContentType": content_type}
-        )
+        video_key = f"{slug}/video.mp4"
+        s3.head_object(Bucket=R2_BUCKET, Key=video_key)
         return True
-    except Exception as e:
-        log(f"[ERROR] Failed to upload {key}: {e}")
+    except:
         return False
 
 def append_to_container_output(row_data):
-    """Append result to container group output CSV"""
+    """Append result to container group output CSV with better error handling"""
     output_key = f"container{CONTAINER_GROUP_ID}output.csv"
     temp_csv = OUTPUT_DIR / f"temp_container{CONTAINER_GROUP_ID}.csv"
     
-    # Download existing file if it exists
-    existing_data = []
     try:
-        temp_download = OUTPUT_DIR / "temp_download.csv"
-        s3.download_file(R2_BUCKET, output_key, str(temp_download))
-        with open(temp_download, 'r', encoding='utf-8') as f:
-            reader = csv.DictReader(f)
-            existing_data = list(reader)
-        temp_download.unlink()
-    except:
-        pass  # File doesn't exist yet, that's okay
-    
-    # Append new row
-    existing_data.append(row_data)
-    
-    # Write back
-    if existing_data:
-        fieldnames = existing_data[0].keys()
-        with open(temp_csv, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(existing_data)
+        # Download existing file if it exists
+        existing_data = []
+        try:
+            temp_download = OUTPUT_DIR / "temp_download.csv"
+            s3.download_file(R2_BUCKET, output_key, str(temp_download))
+            with open(temp_download, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                existing_data = list(reader)
+            temp_download.unlink()
+        except:
+            pass  # File doesn't exist yet
         
-        # Upload with retry
-        for attempt in range(3):
+        # Append new row
+        existing_data.append(row_data)
+        
+        # Write back with proper error handling
+        if existing_data:
+            fieldnames = existing_data[0].keys()
+            with open(temp_csv, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(existing_data)
+            
+            # Upload with retry
             if upload_to_r2(temp_csv, output_key, "text/csv"):
-                log(f"[SUCCESS] Appended to {output_key}")
                 temp_csv.unlink()
                 return True
-            time.sleep(2 ** attempt)
-    
-    return False
+        
+        return False
+        
+    except Exception as e:
+        log(f"[ERROR] Failed to append to container output: {e}")
+        return False
 
 # ================================
-# SCREENSHOT WITH IMPROVED LOGIC
+# SCREENSHOT WITH ENHANCED LOGIC
 # ================================
 async def take_screenshot_with_retry(page, output_path, max_retries=SCREENSHOT_RETRIES):
-    """Take screenshot with retry logic and blank detection"""
+    """Enhanced screenshot with better retry logic"""
     for attempt in range(1, max_retries + 1):
         try:
-            log(f"[DEBUG] Screenshot attempt {attempt}/{max_retries}")
+            log(f"📸 Screenshot attempt {attempt}/{max_retries}")
             
-            # Scroll to ensure content is loaded
+            # Enhanced page loading strategy
             await page.evaluate("""
+                // Scroll to trigger lazy loading
                 window.scrollTo(0, 0);
-                setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 500);
-                setTimeout(() => window.scrollTo(0, 0), 1000);
+                setTimeout(() => {
+                    window.scrollTo(0, document.body.scrollHeight / 2);
+                    setTimeout(() => window.scrollTo(0, 0), 1000);
+                }, 500);
             """)
             
-            # Wait for images to load
-            await page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT)
+            # Wait for network idle with timeout
+            try:
+                await page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT)
+            except PlaywrightTimeout:
+                log(f"[WARN] Network not idle after {NETWORK_IDLE_TIMEOUT}ms, proceeding anyway")
             
             # Additional wait for dynamic content
-            await asyncio.sleep(2)
+            await asyncio.sleep(3)
             
             # Take screenshot
             await page.screenshot(path=str(output_path), full_page=True)
             
-            # Check if file is not too small (indicating blank screenshot)
+            # Validate screenshot
             file_size = output_path.stat().st_size
-            if file_size < 5000:  # Less than 5KB is probably blank
-                log(f"[WARN] Screenshot too small ({file_size} bytes), retrying...")
-                await asyncio.sleep(3)
-                continue
+            if file_size < 10000:  # Less than 10KB might be blank
+                log(f"⚠️ Screenshot too small ({file_size} bytes), retrying...")
+                if attempt < max_retries:
+                    await asyncio.sleep(5)
+                    continue
             
-            log(f"[DEBUG] Screenshot successful")
-            return True
-            
-        except PlaywrightTimeout:
-            log(f"[WARN] Network not idle, continuing anyway")
-            await page.screenshot(path=str(output_path), full_page=True)
+            log(f"✅ Screenshot successful ({file_size} bytes)")
             return True
             
         except Exception as e:
-            log(f"[ERROR] Screenshot attempt {attempt} failed: {e}")
+            log(f"❌ Screenshot attempt {attempt} failed: {e}")
             if attempt < max_retries:
-                await asyncio.sleep(3)
+                await asyncio.sleep(5)
             else:
                 raise
     
     return False
 
 # ================================
-# LANDING PAGE HTML (FIXED)
+# LANDING PAGE HTML (ENHANCED)
 # ================================
 def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
-    """Generate responsive landing page with fixed scrollbar"""
+    """Generate responsive landing page with social media optimization"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Video for You</title>
+    <title>Personalized Video for {slug.replace('-', ' ').title()}</title>
+    
+    <!-- Social Media Meta Tags -->
+    <meta property="og:title" content="I made this video for you">
+    <meta property="og:description" content="Watch this personalized video message">
+    <meta property="og:image" content="{thumbnail_url}">
+    <meta property="og:video" content="{video_url}">
+    <meta property="og:type" content="video.other">
+    <meta name="twitter:card" content="player">
+    <meta name="twitter:title" content="Personalized Video">
+    <meta name="twitter:description" content="Watch this personalized video message">
+    <meta name="twitter:image" content="{thumbnail_url}">
+    
     <style>
         * {{
             margin: 0;
@@ -191,7 +331,6 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
             box-sizing: border-box;
         }}
         
-        /* Fixed scrollbar styling */
         ::-webkit-scrollbar {{
             width: 12px;
         }}
@@ -202,12 +341,9 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
             background: rgba(255, 255, 255, 0.4);
             border-radius: 6px;
         }}
-        ::-webkit-scrollbar-thumb:hover {{
-            background: rgba(255, 255, 255, 0.6);
-        }}
         
         body {{
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
@@ -255,7 +391,7 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
             text-decoration: none;
             font-size: 1.2rem;
             font-weight: 600;
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            transition: all 0.3s ease;
             box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4);
             margin-top: 10px;
         }}
@@ -265,60 +401,47 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
             box-shadow: 0 6px 20px rgba(102, 126, 234, 0.6);
         }}
         
-        /* Responsive adjustments */
         @media (max-width: 768px) {{
-            .container {{
-                padding: 30px 20px;
-            }}
-            
-            h1 {{
-                font-size: 2rem;
-            }}
-            
-            .cta-button {{
-                padding: 15px 36px;
-                font-size: 1rem;
-            }}
-        }}
-        
-        @media (max-width: 480px) {{
-            h1 {{
-                font-size: 1.75rem;
-            }}
-            
-            .subtitle {{
-                font-size: 1rem;
-            }}
+            .container {{ padding: 30px 20px; }}
+            h1 {{ font-size: 2rem; }}
+            .cta-button {{ padding: 15px 36px; font-size: 1rem; }}
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>Hi there</h1>
-        <p class="subtitle">I recorded this video for you</p>
+        <h1>Hi there!</h1>
+        <p class="subtitle">I recorded this personalized video for you</p>
         
-        <video controls poster="{thumbnail_url}">
+        <video controls poster="{thumbnail_url}" preload="metadata">
             <source src="{video_url}" type="video/mp4">
             Your browser does not support the video tag.
         </video>
         
+        <br>
         <a href="{calendly_url}" class="cta-button" target="_blank">
-            Book a FREE 10 Minute Call
+            📅 Book a FREE 10 Minute Call
         </a>
     </div>
 </body>
 </html>"""
 
 # ================================
-# MAIN PROCESSING
+# ENHANCED MAIN PROCESSING
 # ================================
-async def process_row(row, browser, start_time):
-    """Process a single row"""
+async def process_row(row, browser, start_time, progress_tracker):
+    """Process a single row with enhanced error handling"""
     url = row['url']
     slug = row['slug']
     niche = row['niche']
     
-    log(f"[{row['id']}/{row['total']}] {url} | {slug} | niche: {niche}")
+    log(f"🎬 [{row['id']}/{row['total']}] Processing: {slug} | {niche}")
+    
+    # Check if already completed
+    if video_exists_in_r2(slug):
+        log(f"⏭️ Skipping {slug} - already exists in R2")
+        progress_tracker.mark_skipped()
+        return None
     
     # Paths
     overlay_path = OVERLAY_DIR / f"{niche}.mp4"
@@ -327,37 +450,45 @@ async def process_row(row, browser, start_time):
     landing_page_path = OUTPUT_DIR / f"{slug}_landing.html"
     
     if not overlay_path.exists():
-        log(f"[ERROR] Overlay not found: {niche}.mp4")
+        log(f"❌ Overlay not found: {niche}.mp4")
+        progress_tracker.mark_failed()
         return None
     
-    # Create browser context
-    context = await browser.new_context(
-        viewport={"width": WIDTH, "height": HEIGHT},
-        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    )
-    page = await context.new_page()
-    
+    context = None
     try:
-        # Navigate and wait
+        # Create browser context
+        context = await browser.new_context(
+            viewport={"width": WIDTH, "height": HEIGHT},
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        page = await context.new_page()
+        
+        # Navigate with timeout
+        log(f"🌐 Loading: {url}")
         await page.goto(url, wait_until="domcontentloaded", timeout=SCREENSHOT_MAX_WAIT)
-        await page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT)
         
-        # Take screenshot with retry logic
-        await take_screenshot_with_retry(page, thumbnail_path)
+        # Take screenshot
+        if not await take_screenshot_with_retry(page, thumbnail_path):
+            raise Exception("Failed to take screenshot after retries")
         
-        # Get video duration
+        # Get overlay duration
         probe = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
             "-of", "default=noprint_wrappers=1:nokey=1", str(overlay_path),
-            stdout=asyncio.subprocess.PIPE
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        duration_output, _ = await probe.communicate()
-        overlay_duration = float(duration_output.decode().strip())
-        log(f"[DEBUG] Overlay duration: {overlay_duration}s")
+        stdout, stderr = await probe.communicate()
         
-        # Create video with ffmpeg
+        if probe.returncode != 0:
+            raise Exception(f"FFprobe failed: {stderr.decode()}")
+        
+        overlay_duration = float(stdout.decode().strip())
+        log(f"🎵 Overlay duration: {overlay_duration:.1f}s")
+        
+        # Create video with enhanced ffmpeg command
+        log(f"🎞️ Creating video...")
         ffmpeg_cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-loop", "1", "-i", str(thumbnail_path),
             "-i", str(overlay_path),
             "-filter_complex",
@@ -365,39 +496,32 @@ async def process_row(row, browser, start_time):
             f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}[bg];"
             f"[1:v]scale={WIDTH//4}:-1[overlay];"
             f"[bg][overlay]overlay=W-w-20:H-h-20:enable='between(t,0,{overlay_duration})'[outv]",
-            "-map", "[outv]",
-            "-map", "1:a?",
+            "-map", "[outv]", "-map", "1:a?",
             "-t", str(overlay_duration),
             "-c:v", "h264_nvenc" if os.path.exists("/dev/nvidia0") else "libx264",
-            "-preset", "fast",
-            "-c:a", "aac",
-            "-b:a", "128k",
+            "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
             str(output_video)
         ]
         
         process = await asyncio.create_subprocess_exec(*ffmpeg_cmd)
         await process.communicate()
         
-        elapsed = time.time() - start_time
-        log(f"-> saved {slug}.mp4 | {overlay_duration:.1f}s | ⏱ {elapsed//60:.0f}:{elapsed%60:02.0f}")
+        if process.returncode != 0:
+            raise Exception(f"FFmpeg failed with return code {process.returncode}")
         
-    except Exception as e:
-        log(f"[ERROR] Failed to process {slug}: {e}")
-        return None
-    finally:
-        await context.close()
-    
-    # Upload to R2
-    try:
+        # Upload files
+        log(f"☁️ Uploading files for {slug}...")
+        
         # Upload thumbnail
         thumbnail_key = f"{slug}/thumbnail.jpg"
-        upload_to_r2(thumbnail_path, thumbnail_key, "image/jpeg")
-        log(f"[DEBUG] Thumbnail uploaded successfully: {R2_PUBLIC_URL}/{thumbnail_key}")
+        if not upload_to_r2(thumbnail_path, thumbnail_key, "image/jpeg"):
+            raise Exception("Failed to upload thumbnail")
         
         # Upload video
         video_key = f"{slug}/video.mp4"
-        upload_to_r2(output_video, video_key, "video/mp4")
-        log(f"[DEBUG] Video uploaded successfully: {R2_PUBLIC_URL}/{video_key}")
+        if not upload_to_r2(output_video, video_key, "video/mp4"):
+            raise Exception("Failed to upload video")
         
         # Generate and upload landing page
         landing_html = generate_landing_page(
@@ -408,86 +532,110 @@ async def process_row(row, browser, start_time):
         )
         landing_page_path.write_text(landing_html, encoding='utf-8')
         landing_key = f"{slug}/index.html"
-        upload_to_r2(landing_page_path, landing_key, "text/html")
-        log(f"[DEBUG] Landing page uploaded: {R2_PUBLIC_URL}/{landing_key}")
+        if not upload_to_r2(landing_page_path, landing_key, "text/html"):
+            raise Exception("Failed to upload landing page")
         
-        log(f"-> landing page: {R2_PUBLIC_URL}/{slug}/index.html")
+        # Success!
+        elapsed = time.time() - start_time
+        log(f"✅ Completed {slug} in {elapsed//60:.0f}:{elapsed%60:02.0f}")
+        log(f"🔗 Landing page: {R2_PUBLIC_URL}/{slug}/")
         
-        # Return result data
-        return {
+        progress_tracker.mark_completed()
+        
+        # Return result
+        result = {
             'url': url,
             'slug': slug,
             'niche': niche,
             'video_url': f"{R2_PUBLIC_URL}/{video_key}",
             'thumbnail_url': f"{R2_PUBLIC_URL}/{thumbnail_key}",
-            'landing_page': f"{R2_PUBLIC_URL}/{slug}/index.html",
+            'landing_page': f"{R2_PUBLIC_URL}/{slug}/",
             'duration': overlay_duration,
             'worker_id': WORKER_ID,
-            'container_group': CONTAINER_GROUP_ID
+            'container_group': CONTAINER_GROUP_ID,
+            'completed_at': time.strftime('%Y-%m-%d %H:%M:%S')
         }
         
+        # Save to container output
+        append_to_container_output(result)
+        
+        return result
+        
     except Exception as e:
-        log(f"[ERROR] Failed to upload {slug}: {e}")
+        log(f"❌ Failed to process {slug}: {e}")
+        progress_tracker.mark_failed()
         return None
+        
+    finally:
+        if context:
+            await context.close()
+        
+        # Cleanup local files
+        for file_path in [output_video, thumbnail_path, landing_page_path]:
+            if file_path.exists():
+                file_path.unlink()
 
 # ================================
-# MAIN
+# ENHANCED MAIN FUNCTION
 # ================================
 async def main():
     start_time = time.time()
     
-    log(f"[HEADLESS MODE] Worker {WORKER_ID}/{TOTAL_WORKERS}")
-    log(f"[INFO] Container Group: {CONTAINER_GROUP_ID}")
-    log(f"[INFO] CSV Input: {CSV_FILENAME}")
-    log(f"[INFO] Calendly URL: {CALENDLY_URL}")
-    log(f"[INFO] R2 Public URL: {R2_PUBLIC_URL}")
+    log("🚀 Starting Video Generator v21")
+    log(f"👷 Worker {WORKER_ID} of {TOTAL_WORKERS}")
+    log(f"📦 Container Group: {CONTAINER_GROUP_ID}")
+    log(f"📄 CSV Input: {CSV_FILENAME}")
+    log(f"📅 Calendly URL: {CALENDLY_URL}")
+    log(f"☁️ R2 Public URL: {R2_PUBLIC_URL}")
     
-    # Check for NVENC
+    # Check GPU availability
     nvenc_available = os.path.exists("/dev/nvidia0")
-    log(f"[INFO] NVENC detected: {'h264_nvenc will be used.' if nvenc_available else 'CPU encoding will be used.'}")
+    log(f"🎮 GPU Encoding: {'NVENC Available ✅' if nvenc_available else 'CPU Only ⚠️'}")
     
+    # Create directories
     OUTPUT_DIR.mkdir(exist_ok=True)
     OVERLAY_DIR.mkdir(exist_ok=True)
     
     # Download CSV
-    log(f"[INFO] Downloading {CSV_FILENAME} from R2...")
+    log(f"📥 Downloading {CSV_FILENAME}...")
     if not download_from_r2(CSV_FILENAME, CSV_PATH):
-        log(f"[ERROR] Failed to download {CSV_FILENAME}")
+        log(f"❌ Failed to download {CSV_FILENAME}")
         sys.exit(1)
-    log("[SUCCESS] CSV downloaded")
+    log("✅ CSV downloaded successfully")
     
-    # Read CSV and find required overlays
-    log(f"[INFO] Reading CSV to find required overlays: {CSV_PATH}")
+    # Read and process CSV
     with open(CSV_PATH, 'r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         all_rows = list(reader)
     
-    # Get unique niches
-    niches = set(row['niche'] for row in all_rows)
-    log(f"[INFO] Found {len(niches)} unique niches: {sorted(niches)}")
-    
     # Download overlays
+    niches = set(row['niche'] for row in all_rows)
+    log(f"🎬 Found {len(niches)} unique niches: {sorted(niches)}")
+    
     for niche in niches:
         overlay_key = f"{niche}.mp4"
         overlay_path = OVERLAY_DIR / overlay_key
-        log(f"[INFO] Downloading {overlay_key} from R2...")
-        if download_from_r2(overlay_key, overlay_path):
-            log(f"[SUCCESS] Downloaded {overlay_key}")
-        else:
-            log(f"[ERROR] Failed to download {overlay_key}")
+        log(f"📥 Downloading overlay: {niche}.mp4")
+        if not download_from_r2(overlay_key, overlay_path):
+            log(f"❌ Failed to download {overlay_key}")
             sys.exit(1)
     
     # Filter rows for this worker
     my_rows = [row for i, row in enumerate(all_rows) if i % TOTAL_WORKERS == WORKER_ID]
-    log(f"[INFO] {len(my_rows)} rows | {WIDTH}x{HEIGHT}@{FPS}")
-    log(f"[INFO] R2 upload enabled")
     
     # Add row numbers
     for idx, row in enumerate(my_rows, 1):
         row['id'] = idx
         row['total'] = len(my_rows)
     
-    # Process rows
+    log(f"🎯 Processing {len(my_rows)} videos at {WIDTH}x{HEIGHT}@{FPS}fps")
+    
+    # Initialize progress tracker
+    progress_tracker = ProgressTracker(WORKER_ID, CONTAINER_GROUP_ID, len(my_rows))
+    progress_tracker.load_progress()
+    progress_tracker.update_status()
+    
+    # Process videos
     results = []
     async with async_playwright() as p:
         browser = await p.chromium.launch(
@@ -495,49 +643,32 @@ async def main():
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
-                "--no-sandbox"
+                "--no-sandbox",
+                "--disable-gpu"
             ]
         )
         
         for row in my_rows:
-            result = await process_row(row, browser, start_time)
+            result = await process_row(row, browser, start_time, progress_tracker)
             if result:
                 results.append(result)
-                # Append to container output immediately
-                append_to_container_output(result)
         
         await browser.close()
     
-    # Calculate elapsed time
+    # Final summary
     elapsed = time.time() - start_time
-    log(f"⏱️ Total elapsed: {int(elapsed//60)}:{int(elapsed%60):02d}")
-    log(f"✅ Done. {len(results)}/{len(my_rows)} videos.")
-    log(f"[SUCCESS] Results appended to container{CONTAINER_GROUP_ID}output.csv")
+    log(f"🏁 FINAL RESULTS:")
+    log(f"   ✅ Completed: {progress_tracker.completed}")
+    log(f"   ❌ Failed: {progress_tracker.failed}")
+    log(f"   ⏭️ Skipped: {progress_tracker.skipped}")
+    log(f"   ⏱️ Total time: {int(elapsed//60)}:{int(elapsed%60):02d}")
+    log(f"   📊 Rate: {progress_tracker.completed/(elapsed/3600):.1f} videos/hour")
+    
+    # Save final progress
+    progress_tracker.save_progress()
+    progress_tracker.update_status()
+    
+    log(f"🎉 Worker {WORKER_ID} completed! Check container{CONTAINER_GROUP_ID}output.csv for results")
 
 if __name__ == "__main__":
     asyncio.run(main())
-```
-
----
-
-## **✅ WHAT'S FIXED:**
-
-1. ✅ **Screenshots** - 45s timeout, 3 retries, blank detection
-2. ✅ **Scrollbar** - White/transparent (not blue)
-3. ✅ **Button** - Always visible at 100% zoom
-4. ✅ **Container Groups** - Writes to `container{ID}output.csv`
-5. ✅ **Flexible CSV** - Uses `CSV_FILENAME` env variable
-
----
-
-## **🚀 DEPLOY WITH THESE ENV VARS:**
-```
-CSV_FILENAME=master1.csv
-CONTAINER_GROUP_ID=1
-TOTAL_WORKERS=500
-R2_ENDPOINT_URL=your_endpoint
-R2_ACCESS_KEY_ID=your_key
-R2_SECRET_ACCESS_KEY=your_secret
-R2_BUCKET_NAME=video-generator
-R2_PUBLIC_URL=https://v.heedeestudios.com
-CALENDLY_URL=https://calendly.com/heedeestudios/seo-strategy-session
