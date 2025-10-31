@@ -1,59 +1,21 @@
-# Use SaladCloud's proven NVENC base image
 FROM saladtechnologies/ffmpeg-nvenc:1.0.0
 
-# ✅ NVENC already configured in base image
-ENV NVIDIA_DRIVER_CAPABILITIES=compute,video,utility
-ENV NVIDIA_VISIBLE_DEVICES=all
-
-# ✅ CRITICAL FIX: Tell MoviePy/imageio where to find NVENC-enabled FFmpeg
-ENV IMAGEIO_FFMPEG_EXE=/usr/local/bin/ffmpeg
-ENV FFMPEG_BINARY=/usr/local/bin/ffmpeg
-
-# Prevent interactive prompts
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Install Python, git, and Playwright dependencies
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-dev \
-    wget \
-    git \
-    curl \
-    libnss3 \
-    libnspr4 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libcups2 \
-    libdrm2 \
-    libxkbcommon0 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxfixes3 \
-    libxrandr2 \
-    libgbm1 \
-    libasound2 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libatspi2.0-0 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcb1 \
-    libxext6 \
-    libdbus-1-3 \
-    libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the repository
 WORKDIR /app
-RUN git clone https://github.com/nawedwahedi/videogen-salad.git /app
 
-# Install Python dependencies
+COPY requirements.txt /app/
+COPY video_generator.py /app/
+
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright browsers
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Run the script
+ENV PYTHONUNBUFFERED=1
+
 CMD ["python3", "video_generator.py"]
