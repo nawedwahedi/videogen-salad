@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Video Generator v21 - Enhanced with Progress Tracking
+Video Generator v21 - Enhanced with Progress Tracking + UUID Fix
 Features:
+- FIXED: UUID SALAD_MACHINE_ID conversion 
 - Real-time progress tracking (X done out of Y)
 - Crash resilience with skip completed videos
 - Progress status file
@@ -16,13 +17,31 @@ import time
 import boto3
 import asyncio
 import json
+import hashlib
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 # ================================
+# FIXED UUID WORKER ID LOGIC
+# ================================
+def get_worker_id():
+    """Convert SALAD_MACHINE_ID (UUID or int) to worker ID integer"""
+    machine_id = os.getenv("SALAD_MACHINE_ID", "0")
+    
+    # If it's already a number, use it
+    try:
+        return int(machine_id)
+    except ValueError:
+        # If it's a UUID, hash it to get a consistent number
+        hash_obj = hashlib.md5(machine_id.encode())
+        worker_id = int(hash_obj.hexdigest(), 16) % 10000  # Keep it under 10k
+        print(f"[DEBUG] UUID {machine_id} converted to Worker ID: {worker_id}")
+        return worker_id
+
+# ================================
 # CONFIGURATION
 # ================================
-WORKER_ID = int(os.getenv("SALAD_MACHINE_ID", "0"))
+WORKER_ID = get_worker_id()  # ← FIXED: No more UUID crashes!
 TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "1"))
 CONTAINER_GROUP_ID = int(os.getenv("CONTAINER_GROUP_ID", "1"))
 CSV_FILENAME = os.getenv("CSV_FILENAME", "master.csv")
@@ -581,7 +600,8 @@ async def process_row(row, browser, start_time, progress_tracker):
 async def main():
     start_time = time.time()
     
-    log("🚀 Starting Video Generator v21")
+    log("🚀 Starting Video Generator v21 - UUID FIXED")
+    log(f"🔧 Original Machine ID: {os.getenv('SALAD_MACHINE_ID', 'N/A')}")
     log(f"👷 Worker {WORKER_ID} of {TOTAL_WORKERS}")
     log(f"📦 Container Group: {CONTAINER_GROUP_ID}")
     log(f"📄 CSV Input: {CSV_FILENAME}")
