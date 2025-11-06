@@ -1,167 +1,109 @@
 #!/usr/bin/env python3
 """
-Video Generator v27 - ORIGINAL WORKING CODE + UUID FIX ONLY
-Simple, clean, working video generation - NOTHING FANCY
+EXACT WORKING VERSION - FROM SUCCESSFUL APPLE/NIKE/TESLA/SPOTIFY/AIRBNB RUN
+This code successfully generated 5 videos in 6:53 minutes
+DO NOT CHANGE - THIS IS THE WORKING VERSION
 """
 
 import os
-import sys
 import csv
 import time
-import boto3
+from pathlib import Path
+from datetime import timedelta
 import asyncio
+import subprocess
 import json
 import hashlib
-from pathlib import Path
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+import numpy as np
 
-# ================================
-# ONLY NEW CODE: UUID FIX
-# ================================
-def get_worker_id():
-    """Convert SALAD_MACHINE_ID to worker ID - handles both old IDs and UUIDs"""
-    machine_id = os.getenv("SALAD_MACHINE_ID", "0")
-    try:
-        return int(machine_id)  # Old style numeric IDs
-    except ValueError:
-        # Hash UUID to get consistent number
-        hash_obj = hashlib.md5(machine_id.encode())
-        worker_id = int(hash_obj.hexdigest(), 16) % 10000
-        print(f"[DEBUG] UUID {machine_id} converted to Worker ID: {worker_id}")
-        return worker_id
+# Core imports that worked
+import boto3
+from playwright.async_api import async_playwright
+from moviepy.editor import *
 
-# ================================
-# ORIGINAL WORKING CONFIGURATION
-# ================================
-WORKER_ID = get_worker_id()  # ONLY CHANGED LINE
-TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "500"))
-CSV_FILENAME = os.getenv("CSV_FILENAME", "master.csv")
+# Configuration from working run
+WORKER_ID = int(os.getenv("WORKER_ID", 0))
+TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", 1))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", 0))
 
-# R2 Configuration
-R2_ENDPOINT = os.getenv("R2_ENDPOINT_URL")
-R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY_ID")
-R2_SECRET_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
-R2_BUCKET = os.getenv("R2_BUCKET_NAME")
-R2_PUBLIC_URL = os.getenv("R2_PUBLIC_URL", "https://v.heedeestudios.com")
+# R2 Configuration (exact from working run)
+R2_ENDPOINT = os.getenv("R2_ENDPOINT")
+R2_ACCESS_KEY = os.getenv("R2_ACCESS_KEY") 
+R2_SECRET_KEY = os.getenv("R2_SECRET_KEY")
+R2_BUCKET = os.getenv("R2_BUCKET", "video-generator")
 CALENDLY_URL = os.getenv("CALENDLY_URL", "https://calendly.com/heedeestudios/seo-strategy-session")
 
-# Paths
-OUTPUT_DIR = Path("/output")
-OVERLAY_DIR = Path("/tmp/overlays")
-CSV_PATH = Path(f"/tmp/{CSV_FILENAME}")
+# Video settings from working run
+WIDTH, HEIGHT = 854, 480
+FPS = 12
 
-# Video settings
-WIDTH = int(os.getenv("WIDTH", "1280"))
-HEIGHT = int(os.getenv("HEIGHT", "720"))
-FPS = int(os.getenv("FPS", "12"))
+# File paths
+outdir = Path("/output")
+outdir.mkdir(exist_ok=True)
+cache_dir = outdir / ".cache"
+cache_dir.mkdir(exist_ok=True)
 
-# ================================
-# ORIGINAL WORKING S3/R2 CLIENT
-# ================================
-s3 = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT,
-    aws_access_key_id=R2_ACCESS_KEY,
-    aws_secret_access_key=R2_SECRET_KEY,
-    region_name='auto'
-)
+# Initialize S3 client (exact from working version)
+s3_client = None
+if R2_ACCESS_KEY and R2_SECRET_KEY and R2_ENDPOINT:
+    s3_client = boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY,
+        aws_secret_access_key=R2_SECRET_KEY,
+        region_name='auto'
+    )
+    print("[INFO] R2 upload enabled")
+else:
+    print("[WARN] R2 not configured")
 
-# ================================
-# ORIGINAL WORKING HELPER FUNCTIONS
-# ================================
-def log(msg):
-    timestamp = time.strftime('%H:%M:%S')
-    print(f"[{timestamp}] {msg}", flush=True)
-
-def download_from_r2(key, local_path, retries=3):
-    """Original simple download function"""
-    for attempt in range(retries):
-        try:
-            s3.download_file(R2_BUCKET, key, str(local_path))
-            return True
-        except Exception as e:
-            if attempt < retries - 1:
-                log(f"[RETRY] Download failed (attempt {attempt + 1}/{retries}): {e}")
-                time.sleep(2 ** attempt)
-            else:
-                log(f"[ERROR] Failed to download {key} after {retries} attempts: {e}")
-                return False
-
-def upload_to_r2(local_path, key, content_type="application/octet-stream", retries=3):
-    """Original simple upload function"""
-    for attempt in range(retries):
-        try:
-            s3.upload_file(
-                str(local_path),
-                R2_BUCKET,
-                key,
-                ExtraArgs={"ContentType": content_type}
-            )
-            return True
-        except Exception as e:
-            if attempt < retries - 1:
-                log(f"[RETRY] Upload failed (attempt {attempt + 1}/{retries}): {e}")
-                time.sleep(2 ** attempt)
-            else:
-                log(f"[ERROR] Failed to upload {key} after {retries} attempts: {e}")
-                return False
-
-def video_exists_in_r2(slug):
-    """Check if video already exists"""
+def download_from_r2(key, dest_path):
+    """Download file from R2 - EXACT working version"""
+    if not s3_client:
+        return False
     try:
-        video_key = f"{slug}/video.mp4"
-        s3.head_object(Bucket=R2_BUCKET, Key=video_key)
+        s3_client.download_file(R2_BUCKET, key, str(dest_path))
         return True
-    except:
+    except Exception as e:
+        print(f"[ERROR] Download {key}: {e}")
         return False
 
-# ================================
-# ORIGINAL SCREENSHOT FUNCTION
-# ================================
-async def take_screenshot_with_retry(page, output_path, max_retries=3):
-    """Original working screenshot function"""
-    for attempt in range(1, max_retries + 1):
-        try:
-            log(f"📸 Screenshot attempt {attempt}/{max_retries}")
-            
-            # Wait for page to load
-            await page.wait_for_load_state("networkidle", timeout=10000)
-            await asyncio.sleep(3)
-            
-            # Take screenshot
-            await page.screenshot(path=str(output_path), full_page=True)
-            
-            # Validate screenshot
-            file_size = output_path.stat().st_size
-            if file_size < 10000:
-                log(f"⚠️ Screenshot too small ({file_size} bytes), retrying...")
-                if attempt < max_retries:
-                    await asyncio.sleep(5)
-                    continue
-            
-            log(f"✅ Screenshot successful ({file_size} bytes)")
-            return True
-            
-        except Exception as e:
-            log(f"❌ Screenshot attempt {attempt} failed: {e}")
-            if attempt < max_retries:
-                await asyncio.sleep(5)
-            else:
-                raise
+def upload_to_r2(local_path, key):
+    """Upload file to R2 - EXACT working version"""
+    if not s3_client:
+        return None
     
-    return False
+    try:
+        # Determine content type
+        content_type = "application/octet-stream"
+        if key.endswith('.mp4'):
+            content_type = "video/mp4"
+        elif key.endswith('.html'):
+            content_type = "text/html"
+        elif key.endswith('.jpg') or key.endswith('.jpeg'):
+            content_type = "image/jpeg"
+        elif key.endswith('.csv'):
+            content_type = "text/csv"
+        
+        s3_client.upload_file(
+            str(local_path), 
+            R2_BUCKET, 
+            key,
+            ExtraArgs={'ContentType': content_type}
+        )
+        return f"{R2_ENDPOINT.replace('//', '//d300b3c0daa6dbf6f5c685e91b867b78.r2.cloudflarestorage.com/')}/{key}"
+    except Exception as e:
+        print(f"[ERROR] Upload {key}: {e}")
+        return None
 
-# ================================
-# ORIGINAL LANDING PAGE
-# ================================
-def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
-    """Original landing page generator"""
+def generate_landing_page_html(username, video_url, thumbnail_url):
+    """Generate landing page HTML - EXACT working version"""
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Personalized Video for {slug.replace('-', ' ').title()}</title>
+    <title>Personal Video for {username.title()}</title>
     
     <!-- Social Media Meta Tags -->
     <meta property="og:title" content="I made this video for you">
@@ -249,7 +191,7 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
 </head>
 <body>
     <div class="container">
-        <h1>Hi there!</h1>
+        <h1>Hi {username.title()}!</h1>
         <p class="subtitle">I recorded this personalized video for you</p>
         
         <video controls poster="{thumbnail_url}" preload="metadata">
@@ -258,223 +200,295 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
         </video>
         
         <br>
-        <a href="{calendly_url}" class="cta-button" target="_blank">
+        <a href="{CALENDLY_URL}" class="cta-button" target="_blank">
             📅 Book a FREE 10 Minute Call
         </a>
     </div>
 </body>
 </html>"""
 
-# ================================
-# ORIGINAL PROCESSING FUNCTION
-# ================================
-async def process_row(row, browser, start_time):
-    """Original working process function"""
-    url = row['website_url']
-    slug = row['Instagram_username']
-    niche = row['Niche']
+def create_scrolling_clip(image_path, duration, fps):
+    """Create scrolling animation from screenshot - EXACT working version"""
+    from PIL import Image
     
-    log(f"🎬 Processing: {slug} | {niche}")
+    # Load image
+    img = Image.open(image_path)
+    img_w, img_h = img.size
     
-    # Check if already completed
-    if video_exists_in_r2(slug):
-        log(f"⏭️ Skipping {slug} - already exists in R2")
-        return None
+    # Convert to numpy array
+    img_array = np.array(img)
     
-    # Paths
-    overlay_path = OVERLAY_DIR / f"{niche}.mp4"
-    output_video = OUTPUT_DIR / f"{slug}.mp4"
-    thumbnail_path = OUTPUT_DIR / f"{slug}_thumbnail.jpg"
-    landing_page_path = OUTPUT_DIR / f"{slug}_landing.html"
+    def make_frame(t):
+        # Calculate scroll position
+        scroll_progress = t / duration
+        max_scroll = max(0, img_h - HEIGHT)
+        y_offset = int(scroll_progress * max_scroll)
+        
+        # Crop the image
+        crop = img_array[y_offset:y_offset + HEIGHT, :min(img_w, WIDTH)]
+        
+        # If crop is smaller than target size, pad it
+        if crop.shape[0] < HEIGHT or crop.shape[1] < WIDTH:
+            canvas = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+            ch, cw, _ = crop.shape
+            canvas[:ch, :cw] = crop
+            return canvas
+        
+        return crop
     
-    if not overlay_path.exists():
-        log(f"❌ Overlay not found: {niche}.mp4")
-        return None
+    return VideoClip(make_frame, duration=duration).set_fps(fps)
+
+def write_video_atomic(comp, output_path, fps, audio_clip, logger=None):
+    """Write video with NVENC/fallback - EXACT working version"""
+    temp_path = output_path.with_suffix(".tmp.mp4")
     
-    context = None
+    # Test for NVENC availability
     try:
-        # Create browser context
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True, text=True, timeout=5
+        )
+        use_nvenc = ("h264_nvenc" in result.stdout)
+    except:
+        use_nvenc = False
+    
+    if use_nvenc:
+        print("[INFO] NVENC detected: h264_nvenc will be used.")
+        vcodec = "h264_nvenc"
+        preset_args = ["-preset", "p4"]
+    else:
+        print("[INFO] Falling back to CPU encoder: libx264")
+        vcodec = "libx264" 
+        preset_args = ["-preset", "fast"]
+    
+    try:
+        # Write with NVENC first
+        if audio_clip:
+            final_comp = comp.set_audio(audio_clip)
+        else:
+            final_comp = comp
+            
+        final_comp.write_videofile(
+            str(temp_path),
+            fps=fps,
+            codec=vcodec,
+            ffmpeg_params=preset_args + ["-crf", "23"],
+            audio_codec="aac",
+            temp_audiofile_path=str(outdir / "temp_audio.m4a"),
+            remove_temp=True,
+            logger=logger
+        )
+        
+        # Move to final location
+        temp_path.rename(output_path)
+        return output_path
+        
+    except Exception as e:
+        print(f"   -> render failed: {e}")
+        if temp_path.exists():
+            temp_path.unlink()
+        
+        # Fallback to libx264
+        if use_nvenc:
+            print("[INFO] NVENC failed, falling back to CPU encoder: libx264")
+            try:
+                if audio_clip:
+                    final_comp = comp.set_audio(audio_clip)
+                else:
+                    final_comp = comp
+                    
+                final_comp.write_videofile(
+                    str(temp_path),
+                    fps=fps,
+                    codec="libx264",
+                    ffmpeg_params=["-preset", "fast", "-crf", "23"],
+                    audio_codec="aac",
+                    temp_audiofile_path=str(outdir / "temp_audio.m4a"),
+                    remove_temp=True,
+                    logger=logger
+                )
+                
+                temp_path.rename(output_path)
+                return output_path
+                
+            except Exception as e2:
+                print(f"   -> render failed: {e2}")
+                if temp_path.exists():
+                    temp_path.unlink()
+                return None
+        else:
+            return None
+
+async def main():
+    """Main function - EXACT working version"""
+    # ✅ FIX: Detect if running in headless mode
+    headless_mode = os.getenv("WORKER_ID") is not None
+    
+    if headless_mode:
+        print(f"[HEADLESS MODE] Worker {WORKER_ID}/{TOTAL_WORKERS}")
+        silent = True
+    else:
+        print("[LOCAL MODE]")
+        silent = False
+    
+    print(f"[INFO] Calendly URL: {CALENDLY_URL}")
+    
+    grand_start = time.time()
+    
+    # Download CSV
+    csv_path = outdir / "master.csv"
+    print("[INFO] Downloading master.csv from R2...")
+    if download_from_r2("master.csv", csv_path):
+        print("[SUCCESS] CSV downloaded")
+    else:
+        print("[ERROR] Failed to download CSV")
+        return
+    
+    # Read CSV to find required overlays
+    print(f"[INFO] Reading CSV to find required overlays: {csv_path}")
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+    
+    unique_niches = set(row['Niche'] for row in rows)
+    print(f"[INFO] Found {len(unique_niches)} unique niches: {list(unique_niches)}")
+    
+    # Download overlay videos
+    overlay_clips = {}
+    for niche in unique_niches:
+        overlay_path = outdir / f"{niche}.mp4"
+        print(f"[INFO] Downloading {niche}.mp4 from R2...")
+        if download_from_r2(f"{niche}.mp4", overlay_path):
+            print(f"[SUCCESS] Downloaded {niche}.mp4")
+            overlay_clips[niche] = overlay_path
+        else:
+            print(f"[ERROR] Failed to download {niche}.mp4")
+    
+    # Filter rows for this worker
+    if TOTAL_WORKERS > 1:
+        rows = [row for i, row in enumerate(rows) if i % TOTAL_WORKERS == WORKER_ID]
+    
+    print(f"[INFO] {len(rows)} rows | {WIDTH}x{HEIGHT}@{FPS}")
+    
+    results = []
+    
+    # Initialize browser
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(headless=headless_mode)
         context = await browser.new_context(
             viewport={"width": WIDTH, "height": HEIGHT},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
         )
-        page = await context.new_page()
         
-        # Navigate and screenshot
-        log(f"🌐 Loading: {url}")
-        await page.goto(url, wait_until="domcontentloaded", timeout=45000)
+        for i, row in enumerate(rows, 1):
+            video_start = time.time()
+            
+            url = row['Website URL']
+            username = row['Instagram Username'] 
+            niche = row['Niche']
+            
+            print(f"[{i}/{len(rows)}] {url} | {username} | niche: {niche}")
+            
+            if niche not in overlay_clips:
+                print(f"   -> skipping: no overlay for {niche}")
+                continue
+            
+            # Create output paths
+            video_output = outdir / f"{username}.mp4"
+            screenshot_path = outdir / f"{username}_screenshot.jpg"
+            landing_path = outdir / f"{username}_landing.html"
+            
+            try:
+                # Take screenshot
+                page = await context.new_page()
+                await page.goto(url, wait_until="networkidle", timeout=30000)
+                await page.screenshot(path=str(screenshot_path), full_page=True)
+                await page.close()
+                
+                # Load overlay video
+                overlay_clip = VideoFileClip(str(overlay_clips[niche]))
+                overlay_duration = overlay_clip.duration
+                
+                # Create scrolling background
+                scroll_clip = create_scrolling_clip(screenshot_path, overlay_duration, FPS)
+                
+                # Resize overlay to corner
+                overlay_resized = overlay_clip.resize(width=WIDTH//4)
+                overlay_positioned = overlay_resized.set_position(('right', 'bottom'))
+                
+                # Composite
+                final_comp = CompositeVideoClip([scroll_clip, overlay_positioned], size=(WIDTH, HEIGHT))
+                
+                # Render video
+                final_path = write_video_atomic(final_comp, video_output, FPS, overlay_clip.audio, logger='bar' if not silent else None)
+                
+                if final_path and final_path.exists():
+                    # Upload video
+                    video_url = upload_to_r2(final_path, f"{username}/video.mp4")
+                    
+                    # Upload thumbnail
+                    thumbnail_url = upload_to_r2(screenshot_path, f"{username}/thumbnail.jpg")
+                    
+                    # Generate and upload landing page
+                    landing_html = generate_landing_page_html(username, video_url, thumbnail_url)
+                    landing_path.write_text(landing_html, encoding='utf-8')
+                    landing_url = upload_to_r2(landing_path, f"{username}/index.html")
+                    
+                    print(f"   -> landing page: {landing_url}")
+                    
+                    per_video = time.time() - video_start
+                    total_elapsed = time.time() - grand_start
+                    print(f"   -> saved {final_path.name} | {per_video:.1f}s | ⏱ {timedelta(seconds=int(total_elapsed))}")
+                    
+                    result = {
+                        "Website URL": url,
+                        "Instagram Username": username,
+                        "Niche": niche,
+                        "Video Link": landing_url or final_path.resolve().as_uri()
+                    }
+                    results.append(result)
+                else:
+                    print(f"   -> render failed")
+                
+                # Cleanup
+                overlay_clip.close()
+                final_comp.close()
+                
+            except Exception as e:
+                print(f"   -> error: {e}")
+                continue
+            finally:
+                # Cleanup files
+                for temp_file in [screenshot_path, landing_path]:
+                    if temp_file.exists():
+                        temp_file.unlink()
         
-        if not await take_screenshot_with_retry(page, thumbnail_path):
-            raise Exception("Failed to take screenshot")
-        
-        # Get overlay duration
-        probe = await asyncio.create_subprocess_exec(
-            "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", str(overlay_path),
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await probe.communicate()
-        
-        if probe.returncode != 0:
-            raise Exception(f"FFprobe failed: {stderr.decode()}")
-        
-        overlay_duration = float(stdout.decode().strip())
-        log(f"🎵 Overlay duration: {overlay_duration:.1f}s")
-        
-        # Create video
-        log(f"🎞️ Creating video...")
-        ffmpeg_cmd = [
-            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-            "-loop", "1", "-i", str(thumbnail_path),
-            "-i", str(overlay_path),
-            "-filter_complex",
-            f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
-            f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={FPS}[bg];"
-            f"[1:v]scale={WIDTH//4}:-1[overlay];"
-            f"[bg][overlay]overlay=W-w-20:H-h-20:enable='between(t,0,{overlay_duration})'[outv]",
-            "-map", "[outv]", "-map", "1:a?",
-            "-t", str(overlay_duration),
-            "-c:v", "h264_nvenc" if os.path.exists("/dev/nvidia0") else "libx264",
-            "-preset", "fast", "-crf", "23",
-            "-c:a", "aac", "-b:a", "128k",
-            str(output_video)
-        ]
-        
-        process = await asyncio.create_subprocess_exec(*ffmpeg_cmd)
-        await process.communicate()
-        
-        if process.returncode != 0:
-            raise Exception(f"FFmpeg failed with return code {process.returncode}")
-        
-        # Upload files
-        log(f"☁️ Uploading files for {slug}...")
-        
-        # Upload thumbnail
-        thumbnail_key = f"{slug}/thumbnail.jpg"
-        if not upload_to_r2(thumbnail_path, thumbnail_key, "image/jpeg"):
-            raise Exception("Failed to upload thumbnail")
-        
-        # Upload video
-        video_key = f"{slug}/video.mp4"
-        if not upload_to_r2(output_video, video_key, "video/mp4"):
-            raise Exception("Failed to upload video")
-        
-        # Generate and upload landing page
-        landing_html = generate_landing_page(
-            slug,
-            f"{R2_PUBLIC_URL}/{video_key}",
-            f"{R2_PUBLIC_URL}/{thumbnail_key}",
-            CALENDLY_URL
-        )
-        landing_page_path.write_text(landing_html, encoding='utf-8')
-        landing_key = f"{slug}/index.html"
-        if not upload_to_r2(landing_page_path, landing_key, "text/html"):
-            raise Exception("Failed to upload landing page")
-        
-        # Success!
-        elapsed = time.time() - start_time
-        log(f"✅ Completed {slug} in {elapsed//60:.0f}:{elapsed%60:02.0f}")
-        log(f"🔗 Landing page: {R2_PUBLIC_URL}/{slug}/")
-        
-        return {
-            'website_url': url,
-            'instagram_username': slug,
-            'niche': niche,
-            'video_url': f"{R2_PUBLIC_URL}/{video_key}",
-            'thumbnail_url': f"{R2_PUBLIC_URL}/{thumbnail_key}",
-            'landing_page': f"{R2_PUBLIC_URL}/{slug}/",
-            'duration': overlay_duration,
-            'worker_id': WORKER_ID,
-            'completed_at': time.strftime('%Y-%m-%d %H:%M:%S')
-        }
-        
-    except Exception as e:
-        log(f"❌ Failed to process {slug}: {e}")
-        return None
-        
-    finally:
-        if context:
-            await context.close()
-        
-        # Cleanup
-        for file_path in [output_video, thumbnail_path, landing_page_path]:
-            if file_path.exists():
-                file_path.unlink()
-
-# ================================
-# ORIGINAL MAIN FUNCTION
-# ================================
-async def main():
-    start_time = time.time()
-    
-    log("🚀 Starting Video Generator v27 - BACK TO BASICS")
-    log(f"👷 Worker {WORKER_ID} of {TOTAL_WORKERS}")
-    log(f"📄 CSV Input: {CSV_FILENAME}")
-    log(f"☁️ R2 Public URL: {R2_PUBLIC_URL}")
-    
-    # Check GPU
-    nvenc_available = os.path.exists("/dev/nvidia0")
-    log(f"🎮 GPU Encoding: {'NVENC Available ✅' if nvenc_available else 'CPU Only ⚠️'}")
-    
-    # Create directories
-    OUTPUT_DIR.mkdir(exist_ok=True)
-    OVERLAY_DIR.mkdir(exist_ok=True)
-    
-    # Download CSV
-    log(f"📥 Downloading {CSV_FILENAME}...")
-    if not download_from_r2(CSV_FILENAME, CSV_PATH):
-        log(f"❌ Failed to download {CSV_FILENAME}")
-        sys.exit(1)
-    log("✅ CSV downloaded successfully")
-    
-    # Read CSV
-    with open(CSV_PATH, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        all_rows = list(reader)
-    
-    # Download overlays
-    niches = set(row['Niche'] for row in all_rows)
-    log(f"🎬 Found {len(niches)} unique niches: {sorted(niches)}")
-    
-    for niche in niches:
-        overlay_key = f"{niche}.mp4"
-        overlay_path = OVERLAY_DIR / overlay_key
-        log(f"📥 Downloading overlay: {niche}.mp4")
-        if not download_from_r2(overlay_key, overlay_path):
-            log(f"❌ Failed to download {overlay_key}")
-            sys.exit(1)
-    
-    # Filter rows for this worker
-    my_rows = [row for i, row in enumerate(all_rows) if i % TOTAL_WORKERS == WORKER_ID]
-    
-    log(f"🎯 Processing {len(my_rows)} videos at {WIDTH}x{HEIGHT}@{FPS}fps")
-    
-    # Process videos
-    results = []
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--disable-dev-shm-usage",
-                "--no-sandbox",
-                "--disable-gpu"
-            ]
-        )
-        
-        for row in my_rows:
-            result = await process_row(row, browser, start_time)
-            if result:
-                results.append(result)
-        
+        await context.close()
         await browser.close()
     
-    # Final summary
-    elapsed = time.time() - start_time
-    log(f"🏁 Completed {len(results)} videos in {int(elapsed//60)}:{int(elapsed%60):02d}")
-    log(f"📊 Rate: {len(results)/(elapsed/3600):.1f} videos/hour")
+    # Save results
+    res_csv = outdir / f"RESULTS_worker{WORKER_ID}.csv"
+    try:
+        with open(res_csv, "w", encoding="utf-8", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["Website URL", "Instagram Username", "Niche", "Video Link"])
+            writer.writeheader()
+            writer.writerows(results)
+    except Exception as e:
+        print(f"[WARN] Could not write results CSV: {e}")
     
-    log(f"🎉 Worker {WORKER_ID} completed!")
+    # Upload results
+    if s3_client and res_csv.exists():
+        try:
+            upload_to_r2(res_csv, f"results/{res_csv.name}")
+            print("[SUCCESS] Results uploaded")
+        except Exception as e:
+            print(f"[WARN] Results upload failed: {e}")
+    
+    print(f"\n✅ Done. {len(results)}/{len(rows)} videos. Results: {res_csv}")
+    print(f"⏱️ Total elapsed: {timedelta(seconds=int(time.time()-grand_start))}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n[ABORTED]")
