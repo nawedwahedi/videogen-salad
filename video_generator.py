@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Video Generator v21 - MINIMAL UUID FIX ONLY
-ONLY CHANGE: Fixed UUID SALAD_MACHINE_ID conversion
-Everything else kept EXACTLY as your working version
+Video Generator v24 - EMERGENCY DEBUG VERSION
+ONLY CHANGE: Added extensive debug logging to find the exact download issue
 """
 
 import os
@@ -12,12 +11,12 @@ import time
 import boto3
 import asyncio
 import json
-import hashlib  # ← ONLY NEW IMPORT
+import hashlib
 from pathlib import Path
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 
 # ================================
-# ONLY NEW CODE: UUID FIX
+# UUID FIX
 # ================================
 def get_worker_id():
     """Convert SALAD_MACHINE_ID (UUID or int) to worker ID integer"""
@@ -31,9 +30,9 @@ def get_worker_id():
         return worker_id
 
 # ================================
-# CONFIGURATION - ONLY CHANGED WORKER_ID LINE
+# CONFIGURATION
 # ================================
-WORKER_ID = get_worker_id()  # ← ONLY CHANGED LINE
+WORKER_ID = get_worker_id()
 TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "1"))
 CONTAINER_GROUP_ID = int(os.getenv("CONTAINER_GROUP_ID", "1"))
 CSV_FILENAME = os.getenv("CSV_FILENAME", "master.csv")
@@ -53,24 +52,46 @@ WIDTH = int(os.getenv("WIDTH", "1280"))
 HEIGHT = int(os.getenv("HEIGHT", "720"))
 FPS = int(os.getenv("FPS", "12"))
 
-# Screenshot settings - increased for reliability
-SCREENSHOT_MAX_WAIT = 45000  # 45 seconds
-NETWORK_IDLE_TIMEOUT = 10000  # 10 seconds
+# Screenshot settings
+SCREENSHOT_MAX_WAIT = 45000
+NETWORK_IDLE_TIMEOUT = 10000
 SCREENSHOT_RETRIES = 3
 
 # ================================
-# S3/R2 CLIENT - UNCHANGED
+# LOGGING
 # ================================
-s3 = boto3.client(
-    's3',
-    endpoint_url=R2_ENDPOINT,
-    aws_access_key_id=R2_ACCESS_KEY,
-    aws_secret_access_key=R2_SECRET_KEY,
-    region_name='auto'
-)
+def log(msg):
+    """Enhanced logging with timestamps"""
+    timestamp = time.strftime('%H:%M:%S')
+    print(f"[{timestamp}] {msg}", flush=True)
 
 # ================================
-# PROGRESS TRACKING - UNCHANGED
+# EMERGENCY DEBUG ALL ENV VARS
+# ================================
+log(f"[DEBUG] R2_ENDPOINT = '{R2_ENDPOINT}' (type: {type(R2_ENDPOINT)})")
+log(f"[DEBUG] R2_ACCESS_KEY = '{R2_ACCESS_KEY}' (type: {type(R2_ACCESS_KEY)})")
+log(f"[DEBUG] R2_SECRET_KEY = '{R2_SECRET_KEY[:10] if R2_SECRET_KEY else None}...' (type: {type(R2_SECRET_KEY)})")
+log(f"[DEBUG] R2_BUCKET = '{R2_BUCKET}' (type: {type(R2_BUCKET)})")
+log(f"[DEBUG] CSV_FILENAME = '{CSV_FILENAME}' (type: {type(CSV_FILENAME)})")
+
+# ================================
+# S3/R2 CLIENT WITH DEBUG
+# ================================
+try:
+    s3 = boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY,
+        aws_secret_access_key=R2_SECRET_KEY,
+        region_name='auto'
+    )
+    log("[DEBUG] S3 client created successfully")
+except Exception as e:
+    log(f"[DEBUG] S3 client creation failed: {e}")
+    sys.exit(1)
+
+# ================================
+# PROGRESS TRACKING
 # ================================
 class ProgressTracker:
     def __init__(self, worker_id, container_group_id, total_videos):
@@ -171,20 +192,44 @@ class ProgressTracker:
         self.skipped += 1
 
 # ================================
-# HELPER FUNCTIONS - ORIGINAL WORKING VERSIONS
+# HELPER FUNCTIONS WITH EMERGENCY DEBUG
 # ================================
-def log(msg):
-    """Enhanced logging with timestamps"""
-    timestamp = time.strftime('%H:%M:%S')
-    print(f"[{timestamp}] {msg}", flush=True)
-
 def download_from_r2(key, local_path, retries=3):
-    """Download file from R2 with retries - ORIGINAL WORKING VERSION"""
+    """Download file from R2 with retries - WITH EMERGENCY DEBUG"""
+    
+    # EMERGENCY DEBUG - CHECK ALL PARAMETERS
+    log(f"[DEBUG] download_from_r2 called with:")
+    log(f"[DEBUG]   R2_BUCKET = '{R2_BUCKET}' (type: {type(R2_BUCKET)})")
+    log(f"[DEBUG]   key = '{key}' (type: {type(key)})")
+    log(f"[DEBUG]   local_path = '{local_path}' (type: {type(local_path)})")
+    log(f"[DEBUG]   str(local_path) = '{str(local_path)}'")
+    
+    # Check if any parameter is None
+    if R2_BUCKET is None:
+        log("[ERROR] R2_BUCKET is None!")
+        return False
+    if key is None:
+        log("[ERROR] key is None!")
+        return False
+    if local_path is None:
+        log("[ERROR] local_path is None!")
+        return False
+    
+    # Try to create parent directory
+    try:
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        log(f"[DEBUG] Created directory: {local_path.parent}")
+    except Exception as e:
+        log(f"[DEBUG] Directory creation error: {e}")
+    
     for attempt in range(retries):
         try:
+            log(f"[DEBUG] Calling s3.download_file('{R2_BUCKET}', '{key}', '{str(local_path)}')")
             s3.download_file(R2_BUCKET, key, str(local_path))
+            log(f"[DEBUG] s3.download_file completed successfully")
             return True
         except Exception as e:
+            log(f"[DEBUG] s3.download_file failed with: {type(e).__name__}: {e}")
             if attempt < retries - 1:
                 log(f"[RETRY] Download failed (attempt {attempt + 1}/{retries}): {e}")
                 time.sleep(2 ** attempt)
@@ -261,7 +306,7 @@ def append_to_container_output(row_data):
         return False
 
 # ================================
-# SCREENSHOT WITH ENHANCED LOGIC - UNCHANGED
+# SCREENSHOT WITH ENHANCED LOGIC
 # ================================
 async def take_screenshot_with_retry(page, output_path, max_retries=SCREENSHOT_RETRIES):
     """Enhanced screenshot with better retry logic"""
@@ -312,7 +357,7 @@ async def take_screenshot_with_retry(page, output_path, max_retries=SCREENSHOT_R
     return False
 
 # ================================
-# LANDING PAGE HTML - UNCHANGED
+# LANDING PAGE HTML
 # ================================
 def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
     """Generate responsive landing page with social media optimization"""
@@ -437,13 +482,13 @@ def generate_landing_page(slug, video_url, thumbnail_url, calendly_url):
 </html>"""
 
 # ================================
-# ENHANCED MAIN PROCESSING - UNCHANGED
+# MAIN PROCESSING
 # ================================
 async def process_row(row, browser, start_time, progress_tracker):
     """Process a single row with enhanced error handling"""
     url = row['website_url']
-    slug = row['Instagram_username']  # Use exact column name from your CSV
-    niche = row['Niche']  # Use exact column name from your CSV
+    slug = row['Instagram_username']
+    niche = row['Niche']
     
     log(f"🎬 [{row['id']}/{row['total']}] Processing: {slug} | {niche}")
     
@@ -586,12 +631,12 @@ async def process_row(row, browser, start_time, progress_tracker):
                 file_path.unlink()
 
 # ================================
-# ENHANCED MAIN FUNCTION - UNCHANGED
+# MAIN FUNCTION WITH EXTENSIVE DEBUG
 # ================================
 async def main():
     start_time = time.time()
     
-    log("🚀 Starting Video Generator v21 - UUID FIXED")
+    log("🚀 Starting Video Generator v24 - EMERGENCY DEBUG")
     log(f"🔧 Original Machine ID: {os.getenv('SALAD_MACHINE_ID', 'N/A')}")
     log(f"👷 Worker {WORKER_ID} of {TOTAL_WORKERS}")
     log(f"📦 Container Group: {CONTAINER_GROUP_ID}")
