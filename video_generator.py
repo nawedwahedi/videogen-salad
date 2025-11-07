@@ -322,7 +322,7 @@ def write_video_atomic(comp, output_path, fps, audio_clip, logger=None):
 async def main():
     """Main function - EXACT working version"""
     # ✅ FIX: Detect if running in headless mode
-    headless_mode = os.getenv("WORKER_ID") is not None
+    headless_mode = True  # Always headless in containers
     
     if headless_mode:
         print(f"[HEADLESS MODE] Worker {WORKER_ID}/{TOTAL_WORKERS}")
