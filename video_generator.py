@@ -16,7 +16,18 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 # ================================
 # CONFIGURATION
 # ================================
-WORKER_ID = int(os.getenv("SALAD_MACHINE_ID", "0"))
+def get_worker_id():
+    machine_id = os.getenv("SALAD_MACHINE_ID", "0")
+    try:
+        return int(machine_id)
+    except ValueError:
+        # Handle UUID format from SaladCloud
+        import hashlib
+        worker_id = int(hashlib.md5(machine_id.encode()).hexdigest(), 16) % 10000
+        print(f"[DEBUG] UUID {machine_id} converted to Worker ID: {worker_id}")
+        return worker_id
+
+WORKER_ID = get_worker_id()
 TOTAL_WORKERS = int(os.getenv("TOTAL_WORKERS", "1"))
 CONTAINER_GROUP_ID = int(os.getenv("CONTAINER_GROUP_ID", "1"))
 CSV_FILENAME = os.getenv("CSV_FILENAME", "master.csv")
