@@ -842,7 +842,9 @@ def write_video_atomic(comp, out_path, fps, audio_clip, logger):
     
     if use_nvenc:
         vcodec = "h264_nvenc"
-        params = ["-preset","p4","-cq","18","-pix_fmt","yuv420p"]
+        # Universal NVENC params - compatible with all NVIDIA cards
+        # Uses bitrate control instead of -cq for maximum compatibility
+        params = ["-preset","fast","-b:v","3500k","-maxrate","5M","-bufsize","7M","-pix_fmt","yuv420p"]
     else:
         vcodec = "libx264"
         params = ["-preset","fast","-crf","18","-pix_fmt","yuv420p"]
